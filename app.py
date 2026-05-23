@@ -1,9 +1,14 @@
 import os
+import time
+from pathlib import Path
 from typing import Any
 
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
+
+
+TEMP_UPLOAD_DIR = Path("temp_uploads")
 
 
 def get_env_value(name: str, default: str | None = None) -> str:
@@ -13,6 +18,11 @@ def get_env_value(name: str, default: str | None = None) -> str:
         raise ValueError(f"{name} が .env に設定されていません。")
 
     return value
+
+
+@st.cache_resource
+def get_openai_client(api_key: str) -> OpenAI:
+    return OpenAI(api_key=api_key)
 
 
 def extract_file_search_results(response: Any) -> list[dict[str, str]]:
@@ -53,15 +63,61 @@ def extract_file_search_results(response: Any) -> list[dict[str, str]]:
     return results_list
 
 
-def ask_rag(question: str) -> tuple[str, list[dict[str, str]]]:
-    load_dotenv()
+def upload_file_to_vector_store(
+    client: OpenAI,
+    uploaded_file: Any,
+    vector_store_id: str,
+) -> dict[str, str]:
+    TEMP_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-    api_key = get_env_value("OPENAI_API_KEY")
-    model = get_env_value("OPENAI_MODEL", "gpt-5.5")
-    vector_store_id = get_env_value("VECTOR_STORE_ID")
+    temp_path = TEMP_UPLOAD_DIR / uploaded_file.name
 
-    client = OpenAI(api_key=api_key)
+    # Streamlitのアップロードファイルを一時保存する
+    temp_path.write_bytes(uploaded_file.getvalue())
 
+    # 1. OpenAI Files API にアップロード
+    with temp_path.open("rb") as f:
+        openai_file = client.files.create(
+            file=f,
+            purpose="assistants",
+        )
+
+    # 2. 既存のVector Storeに追加
+    vector_store_file = client.vector_stores.files.create(
+        vector_store_id=vector_store_id,
+        file_id=openai_file.id,
+    )
+
+    # 3. 処理完了まで待つ
+    status = vector_store_file.status
+
+    while status not in ["completed", "failed", "cancelled"]:
+        time.sleep(2)
+
+        current = client.vector_stores.files.retrieve(
+            vector_store_id=vector_store_id,
+            file_id=openai_file.id,
+        )
+
+        status = current.status
+
+    if status != "completed":
+        raise RuntimeError(f"ファイル処理に失敗しました。status={status}")
+
+    return {
+        "filename": uploaded_file.name,
+        "file_id": openai_file.id,
+        "vector_store_id": vector_store_id,
+        "status": status,
+    }
+
+
+def ask_rag(
+    client: OpenAI,
+    question: str,
+    model: str,
+    vector_store_id: str,
+) -> tuple[str, list[dict[str, str]]]:
     response = client.responses.create(
         model=model,
         input=[
@@ -97,6 +153,8 @@ def ask_rag(question: str) -> tuple[str, list[dict[str, str]]]:
 
 
 def main():
+    load_dotenv()
+
     st.set_page_config(
         page_title="RAG Assistant Prototype",
         page_icon="📚",
@@ -106,12 +164,19 @@ def main():
     st.title("📚 RAG Assistant Prototype")
     st.caption("閉じた資料に基づいて、根拠つきで質問応答するRAGアプリ")
 
+    try:
+        api_key = get_env_value("OPENAI_API_KEY")
+        model = get_env_value("OPENAI_MODEL", "gpt-5.5")
+        vector_store_id = get_env_value("VECTOR_STORE_ID")
+    except Exception as e:
+        st.error("環境変数の読み込みに失敗しました。`.env` を確認してください。")
+        st.exception(e)
+        return
+
+    client = get_openai_client(api_key)
+
     with st.sidebar:
         st.header("設定")
-
-        load_dotenv()
-        model = os.getenv("OPENAI_MODEL", "未設定")
-        vector_store_id = os.getenv("VECTOR_STORE_ID", "未設定")
 
         st.write("使用モデル")
         st.code(model)
@@ -120,8 +185,38 @@ def main():
         st.code(vector_store_id)
 
         st.markdown("---")
-        st.write("現在は、すでに登録済みのVector Storeを検索対象にしています。")
-        st.write("ファイルアップロード機能は後続ステップで追加予定です。")
+        st.header("資料アップロード")
+
+        uploaded_file = st.file_uploader(
+            "検索対象に追加する資料を選んでください",
+            type=["txt", "md", "pdf"],
+        )
+
+        if uploaded_file is not None:
+            st.write("選択中のファイル")
+            st.code(uploaded_file.name)
+
+            if st.button("この資料をVector Storeに追加"):
+                with st.spinner("資料をアップロードして検索可能にしています..."):
+                    try:
+                        result = upload_file_to_vector_store(
+                            client=client,
+                            uploaded_file=uploaded_file,
+                            vector_store_id=vector_store_id,
+                        )
+
+                        st.success("資料の追加が完了しました。")
+                        st.write("追加結果")
+                        st.json(result)
+
+                    except Exception as e:
+                        st.error("資料の追加中にエラーが発生しました。")
+                        st.exception(e)
+
+        st.markdown("---")
+        st.caption(
+            "現在は、登録済みVector Storeに資料を追加し、その資料群に対して質問する構成です。"
+        )
 
     st.subheader("質問")
 
@@ -155,9 +250,14 @@ def main():
 
         with st.spinner("資料を検索して回答を生成しています..."):
             try:
-                answer, search_results = ask_rag(question)
+                answer, search_results = ask_rag(
+                    client=client,
+                    question=question,
+                    model=model,
+                    vector_store_id=vector_store_id,
+                )
             except Exception as e:
-                st.error("エラーが発生しました。")
+                st.error("質問応答中にエラーが発生しました。")
                 st.exception(e)
                 return
 
