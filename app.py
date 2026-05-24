@@ -12,6 +12,10 @@ TEMP_UPLOAD_DIR = Path("temp_uploads")
 
 
 def get_env_value(name: str, default: str | None = None) -> str:
+    """
+    .env から環境変数を読み込むための補助関数。
+    必須項目が空の場合はエラーにする。
+    """
     value = os.getenv(name, default)
 
     if value is None or value == "":
@@ -22,10 +26,18 @@ def get_env_value(name: str, default: str | None = None) -> str:
 
 @st.cache_resource
 def get_openai_client(api_key: str) -> OpenAI:
+    """
+    OpenAIクライアントを作成する。
+    Streamlitの再実行ごとに毎回作り直さないように cache_resource を使う。
+    """
     return OpenAI(api_key=api_key)
 
 
 def extract_file_search_results(response: Any) -> list[dict[str, str]]:
+    """
+    Responses API の返答から file_search の検索結果を取り出す。
+    回答の根拠候補として画面に表示するために使う。
+    """
     results_list = []
 
     for item in response.output:
@@ -68,6 +80,10 @@ def upload_file_to_vector_store(
     uploaded_file: Any,
     vector_store_id: str,
 ) -> dict[str, str]:
+    """
+    StreamlitでアップロードされたファイルをOpenAIにアップロードし、
+    既存のVector Storeに追加する。
+    """
     TEMP_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
     temp_path = TEMP_UPLOAD_DIR / uploaded_file.name
@@ -112,12 +128,52 @@ def upload_file_to_vector_store(
     }
 
 
+def list_vector_store_files(
+    client: OpenAI,
+    vector_store_id: str,
+) -> list[dict[str, str]]:
+    """
+    Vector Storeに登録されているファイル一覧を取得する。
+    """
+    vector_store_files = client.vector_stores.files.list(
+        vector_store_id=vector_store_id
+    )
+
+    file_list = []
+
+    for vs_file in vector_store_files.data:
+        file_id = str(getattr(vs_file, "id", "unknown"))
+        status = str(getattr(vs_file, "status", "unknown"))
+
+        filename = "unknown"
+
+        try:
+            file_info = client.files.retrieve(file_id)
+            filename = str(getattr(file_info, "filename", "unknown"))
+        except Exception:
+            filename = f"filename取得失敗: {file_id}"
+
+        file_list.append(
+            {
+                "filename": filename,
+                "file_id": file_id,
+                "status": status,
+            }
+        )
+
+    return file_list
+
+
 def ask_rag(
     client: OpenAI,
     question: str,
     model: str,
     vector_store_id: str,
 ) -> tuple[str, list[dict[str, str]]]:
+    """
+    File Searchを使ってVector Store内の資料を検索し、
+    その結果に基づいて回答を生成する。
+    """
     response = client.responses.create(
         model=model,
         input=[
@@ -209,9 +265,52 @@ def main():
                         st.write("追加結果")
                         st.json(result)
 
+                        # ファイル一覧のキャッシュを消す。
+                        # 次に一覧更新ボタンを押したとき、新しい状態を取得できる。
+                        st.session_state.pop("registered_files", None)
+
                     except Exception as e:
                         st.error("資料の追加中にエラーが発生しました。")
                         st.exception(e)
+
+        st.markdown("---")
+        st.header("登録済み資料")
+
+        if st.button("登録済み資料一覧を更新"):
+            with st.spinner("登録済み資料を取得しています..."):
+                try:
+                    registered_files = list_vector_store_files(
+                        client=client,
+                        vector_store_id=vector_store_id,
+                    )
+
+                    st.session_state["registered_files"] = registered_files
+
+                except Exception as e:
+                    st.error("登録済み資料の取得中にエラーが発生しました。")
+                    st.exception(e)
+
+        registered_files = st.session_state.get("registered_files", [])
+
+        if registered_files:
+            st.write(f"{len(registered_files)} 件の資料が登録されています。")
+
+            for file in registered_files:
+                status = file["status"]
+
+                if status == "completed":
+                    status_label = "✅ completed"
+                else:
+                    status_label = f"⚠️ {status}"
+
+                with st.expander(file["filename"]):
+                    st.write("status")
+                    st.code(status_label)
+
+                    st.write("file_id")
+                    st.code(file["file_id"])
+        else:
+            st.info("まだ資料一覧を取得していません。")
 
         st.markdown("---")
         st.caption(
