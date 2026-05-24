@@ -1,5 +1,7 @@
+import json
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +33,48 @@ def get_openai_client(api_key: str) -> OpenAI:
     Streamlitの再実行ごとに毎回作り直さないように cache_resource を使う。
     """
     return OpenAI(api_key=api_key)
+
+
+def init_session_state() -> None:
+    """
+    Streamlitのセッション状態を初期化する。
+    質問・回答履歴など、画面操作中に保持したい情報を入れる。
+    """
+    if "qa_history" not in st.session_state:
+        st.session_state["qa_history"] = []
+
+
+def add_qa_history(
+    question: str,
+    answer: str,
+    search_results: list[dict[str, str]],
+) -> None:
+    """
+    質問・回答・根拠候補を履歴に追加する。
+    新しい履歴ほど上に表示したいので、先頭に追加する。
+    """
+    history_item = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "question": question,
+        "answer": answer,
+        "search_results": search_results,
+    }
+
+    st.session_state["qa_history"].insert(0, history_item)
+
+
+def create_history_json() -> str:
+    """
+    質問・回答履歴をJSON文字列として出力する。
+    発表準備や開発ログに使えるようにする。
+    """
+    export_data = {
+        "app_name": "RAG Assistant Prototype",
+        "exported_at": datetime.now().isoformat(timespec="seconds"),
+        "history": st.session_state.get("qa_history", []),
+    }
+
+    return json.dumps(export_data, ensure_ascii=False, indent=2)
 
 
 def extract_file_search_results(response: Any) -> list[dict[str, str]]:
@@ -142,7 +186,10 @@ def list_vector_store_files(
     file_list = []
 
     for vs_file in vector_store_files.data:
-        file_id = str(getattr(vs_file, "id", "unknown"))
+        file_id = str(
+            getattr(vs_file, "file_id", None)
+            or getattr(vs_file, "id", "unknown")
+        )
         status = str(getattr(vs_file, "status", "unknown"))
 
         filename = "unknown"
@@ -208,6 +255,83 @@ def ask_rag(
     return answer, search_results
 
 
+def render_search_results(search_results: list[dict[str, str]]) -> None:
+    """
+    検索された根拠候補を画面に表示する。
+    回答直後と履歴表示の両方で使えるように関数化している。
+    """
+    if not search_results:
+        st.info("検索結果の詳細は取得できませんでした。")
+        return
+
+    for i, result in enumerate(search_results, start=1):
+        with st.expander(f"根拠候補 {i}: {result['filename']}"):
+            st.write("score")
+            st.code(result["score"])
+
+            st.write("本文プレビュー")
+            preview = result.get("preview", "")
+
+            if preview:
+                st.write(preview[:1500])
+            else:
+                st.info("本文プレビューは取得できませんでした。")
+
+
+def render_qa_history() -> None:
+    """
+    質問・回答履歴を画面下部に表示する。
+    """
+    st.markdown("---")
+    st.subheader("質問・回答履歴")
+
+    qa_history = st.session_state.get("qa_history", [])
+
+    col1, col2 = st.columns([1, 2])
+
+    with col1:
+        if st.button("履歴をクリア"):
+            st.session_state["qa_history"] = []
+            st.rerun()
+
+    with col2:
+        if qa_history:
+            history_json = create_history_json()
+
+            st.download_button(
+                label="履歴をJSONでダウンロード",
+                data=history_json,
+                file_name="qa_history.json",
+                mime="application/json",
+            )
+
+    if not qa_history:
+        st.info("まだ質問履歴はありません。")
+        return
+
+    st.write(f"{len(qa_history)} 件の質問履歴があります。")
+
+    for i, item in enumerate(qa_history, start=1):
+        timestamp = item.get("timestamp", "no timestamp")
+        question_text = item["question"]
+        answer_text = item["answer"]
+        search_results = item["search_results"]
+
+        with st.expander(f"履歴 {i}: {question_text[:40]}"):
+            st.caption(f"日時: {timestamp}")
+
+            st.markdown("**質問**")
+            st.write(question_text)
+
+            st.markdown("**回答**")
+            st.write(answer_text)
+
+            st.markdown("**根拠候補**")
+            st.write(f"{len(search_results)} 件")
+
+            render_search_results(search_results)
+
+
 def main():
     load_dotenv()
 
@@ -216,6 +340,8 @@ def main():
         page_icon="📚",
         layout="wide",
     )
+
+    init_session_state()
 
     st.title("📚 RAG Assistant Prototype")
     st.caption("閉じた資料に基づいて、根拠つきで質問応答するRAGアプリ")
@@ -345,6 +471,7 @@ def main():
     if submitted:
         if not question.strip():
             st.warning("質問を入力してください。")
+            render_qa_history()
             return
 
         with st.spinner("資料を検索して回答を生成しています..."):
@@ -358,23 +485,22 @@ def main():
             except Exception as e:
                 st.error("質問応答中にエラーが発生しました。")
                 st.exception(e)
+                render_qa_history()
                 return
+
+        add_qa_history(
+            question=question,
+            answer=answer,
+            search_results=search_results,
+        )
 
         st.subheader("回答")
         st.write(answer)
 
         st.subheader("検索された根拠候補")
+        render_search_results(search_results)
 
-        if not search_results:
-            st.info("検索結果の詳細は取得できませんでした。")
-        else:
-            for i, result in enumerate(search_results, start=1):
-                with st.expander(f"根拠候補 {i}: {result['filename']}"):
-                    st.write("score")
-                    st.code(result["score"])
-
-                    st.write("本文プレビュー")
-                    st.write(result["preview"][:1500])
+    render_qa_history()
 
 
 if __name__ == "__main__":
