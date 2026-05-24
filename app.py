@@ -43,6 +43,9 @@ def init_session_state() -> None:
     if "qa_history" not in st.session_state:
         st.session_state["qa_history"] = []
 
+    if "registered_files" not in st.session_state:
+        st.session_state["registered_files"] = []
+
 
 def add_qa_history(
     question: str,
@@ -209,6 +212,27 @@ def list_vector_store_files(
         )
 
     return file_list
+
+
+def remove_file_from_vector_store(
+    client: OpenAI,
+    vector_store_id: str,
+    file_id: str,
+) -> dict[str, str]:
+    """
+    指定したファイルをVector Storeの検索対象から外す。
+    注意: OpenAI上のファイル本体を削除するのではなく、
+    このVector Storeとの紐づきを外すだけ。
+    """
+    deleted = client.vector_stores.files.delete(
+        vector_store_id=vector_store_id,
+        file_id=file_id,
+    )
+
+    return {
+        "file_id": str(getattr(deleted, "id", file_id)),
+        "deleted": str(getattr(deleted, "deleted", "unknown")),
+    }
 
 
 def ask_rag(
@@ -393,7 +417,7 @@ def main():
 
                         # ファイル一覧のキャッシュを消す。
                         # 次に一覧更新ボタンを押したとき、新しい状態を取得できる。
-                        st.session_state.pop("registered_files", None)
+                        st.session_state["registered_files"] = []
 
                     except Exception as e:
                         st.error("資料の追加中にエラーが発生しました。")
@@ -421,20 +445,50 @@ def main():
         if registered_files:
             st.write(f"{len(registered_files)} 件の資料が登録されています。")
 
-            for file in registered_files:
+            for i, file in enumerate(registered_files, start=1):
                 status = file["status"]
+                filename = file["filename"]
+                file_id = file["file_id"]
 
                 if status == "completed":
                     status_label = "✅ completed"
                 else:
                     status_label = f"⚠️ {status}"
 
-                with st.expander(file["filename"]):
+                with st.expander(filename):
                     st.write("status")
                     st.code(status_label)
 
                     st.write("file_id")
-                    st.code(file["file_id"])
+                    st.code(file_id)
+
+                    st.warning(
+                        "この操作を行うと、この資料は現在のVector Storeの検索対象から外れます。"
+                    )
+
+                    delete_button_key = f"delete_{i}_{file_id}"
+
+                    if st.button(
+                        "この資料を検索対象から外す",
+                        key=delete_button_key,
+                    ):
+                        with st.spinner("資料をVector Storeから外しています..."):
+                            try:
+                                delete_result = remove_file_from_vector_store(
+                                    client=client,
+                                    vector_store_id=vector_store_id,
+                                    file_id=file_id,
+                                )
+
+                                st.success("資料を検索対象から外しました。")
+                                st.json(delete_result)
+
+                                st.session_state["registered_files"] = []
+                                st.rerun()
+
+                            except Exception as e:
+                                st.error("資料の削除中にエラーが発生しました。")
+                                st.exception(e)
         else:
             st.info("まだ資料一覧を取得していません。")
 
