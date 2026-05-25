@@ -46,20 +46,65 @@ def init_session_state() -> None:
     if "registered_files" not in st.session_state:
         st.session_state["registered_files"] = []
 
+    if "active_vector_store_id" not in st.session_state:
+        st.session_state["active_vector_store_id"] = ""
+
+
+def ensure_active_vector_store(env_vector_store_id: str) -> None:
+    """
+    使用中のVector Store IDが未設定なら、.env の VECTOR_STORE_ID を使う。
+    """
+    if not st.session_state.get("active_vector_store_id"):
+        st.session_state["active_vector_store_id"] = env_vector_store_id
+
+
+def get_answer_style_instruction(answer_style: str) -> str:
+    """
+    画面で選ばれた回答スタイルに応じて、モデルへの追加指示を返す。
+    """
+    style_instructions = {
+        "簡潔": (
+            "回答は短めにしてください。"
+            "重要な点を中心に、2〜4文程度でまとめてください。"
+        ),
+        "詳細": (
+            "回答はやや詳しくしてください。"
+            "背景、理由、注意点が分かるように、必要に応じて段落を分けて説明してください。"
+        ),
+        "箇条書き": (
+            "回答は箇条書きを中心にしてください。"
+            "重要な点を整理し、読みやすく示してください。"
+        ),
+        "発表用": (
+            "回答はゼミ発表で説明しやすい形にしてください。"
+            "背景、要点、意義が伝わるように、少し丁寧な表現でまとめてください。"
+        ),
+    }
+
+    return style_instructions.get(answer_style, style_instructions["簡潔"])
+
 
 def add_qa_history(
     question: str,
     answer: str,
     search_results: list[dict[str, str]],
+    max_num_results: int,
+    answer_style: str,
+    vector_store_id: str,
 ) -> None:
     """
-    質問・回答・根拠候補を履歴に追加する。
+    質問・回答・根拠候補・回答設定を履歴に追加する。
     新しい履歴ほど上に表示したいので、先頭に追加する。
     """
     history_item = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "question": question,
         "answer": answer,
+        "settings": {
+            "max_num_results": max_num_results,
+            "answer_style": answer_style,
+            "vector_store_id": vector_store_id,
+        },
         "search_results": search_results,
     }
 
@@ -122,6 +167,21 @@ def extract_file_search_results(response: Any) -> list[dict[str, str]]:
     return results_list
 
 
+def create_vector_store(
+    client: OpenAI,
+    name: str,
+) -> dict[str, str]:
+    """
+    新しいVector Storeを作成する。
+    """
+    vector_store = client.vector_stores.create(name=name)
+
+    return {
+        "name": str(getattr(vector_store, "name", name)),
+        "vector_store_id": str(vector_store.id),
+    }
+
+
 def upload_file_to_vector_store(
     client: OpenAI,
     uploaded_file: Any,
@@ -129,7 +189,7 @@ def upload_file_to_vector_store(
 ) -> dict[str, str]:
     """
     StreamlitでアップロードされたファイルをOpenAIにアップロードし、
-    既存のVector Storeに追加する。
+    指定したVector Storeに追加する。
     """
     TEMP_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -145,7 +205,7 @@ def upload_file_to_vector_store(
             purpose="assistants",
         )
 
-    # 2. 既存のVector Storeに追加
+    # 2. Vector Storeに追加
     vector_store_file = client.vector_stores.files.create(
         vector_store_id=vector_store_id,
         file_id=openai_file.id,
@@ -240,11 +300,15 @@ def ask_rag(
     question: str,
     model: str,
     vector_store_id: str,
+    max_num_results: int,
+    answer_style: str,
 ) -> tuple[str, list[dict[str, str]]]:
     """
     File Searchを使ってVector Store内の資料を検索し、
     その結果に基づいて回答を生成する。
     """
+    style_instruction = get_answer_style_instruction(answer_style)
+
     response = client.responses.create(
         model=model,
         input=[
@@ -254,8 +318,9 @@ def ask_rag(
                     "あなたは、与えられた資料だけを根拠に回答するRAGアシスタントです。"
                     "資料内に根拠が見つからない場合は、推測せず"
                     "「資料内では確認できません」と答えてください。"
-                    "回答は日本語で、簡潔かつ分かりやすく書いてください。"
+                    "回答は日本語で、分かりやすく書いてください。"
                     "可能であれば、根拠となる内容に沿って説明してください。"
+                    f"{style_instruction}"
                 ),
             },
             {
@@ -267,7 +332,7 @@ def ask_rag(
             {
                 "type": "file_search",
                 "vector_store_ids": [vector_store_id],
-                "max_num_results": 5,
+                "max_num_results": max_num_results,
             }
         ],
         include=["file_search_call.results"],
@@ -340,9 +405,19 @@ def render_qa_history() -> None:
         question_text = item["question"]
         answer_text = item["answer"]
         search_results = item["search_results"]
+        settings = item.get("settings", {})
+
+        max_num_results = settings.get("max_num_results", "unknown")
+        answer_style = settings.get("answer_style", "unknown")
+        vector_store_id = settings.get("vector_store_id", "unknown")
 
         with st.expander(f"履歴 {i}: {question_text[:40]}"):
             st.caption(f"日時: {timestamp}")
+
+            st.markdown("**回答設定**")
+            st.write(f"- 検索件数: {max_num_results}")
+            st.write(f"- 回答スタイル: {answer_style}")
+            st.write(f"- 使用Vector Store: `{vector_store_id}`")
 
             st.markdown("**質問**")
             st.write(question_text)
@@ -373,13 +448,16 @@ def main():
     try:
         api_key = get_env_value("OPENAI_API_KEY")
         model = get_env_value("OPENAI_MODEL", "gpt-5.5")
-        vector_store_id = get_env_value("VECTOR_STORE_ID")
+        env_vector_store_id = get_env_value("VECTOR_STORE_ID")
     except Exception as e:
         st.error("環境変数の読み込みに失敗しました。`.env` を確認してください。")
         st.exception(e)
         return
 
+    ensure_active_vector_store(env_vector_store_id)
+
     client = get_openai_client(api_key)
+    active_vector_store_id = st.session_state["active_vector_store_id"]
 
     with st.sidebar:
         st.header("設定")
@@ -387,8 +465,80 @@ def main():
         st.write("使用モデル")
         st.code(model)
 
-        st.write("Vector Store ID")
-        st.code(vector_store_id)
+        st.write(".env の Vector Store ID")
+        st.code(env_vector_store_id)
+
+        st.write("現在使用中の Vector Store ID")
+        st.code(active_vector_store_id)
+
+        if active_vector_store_id != env_vector_store_id:
+            st.warning(
+                "現在は .env とは別のVector Storeを一時的に使用しています。"
+                "この設定を次回以降も使う場合は、.env の VECTOR_STORE_ID を更新してください。"
+            )
+
+        if st.button(".env のVector Storeに戻す"):
+            st.session_state["active_vector_store_id"] = env_vector_store_id
+            st.session_state["registered_files"] = []
+            st.rerun()
+
+        st.markdown("---")
+        st.header("Vector Store作成")
+
+        new_vector_store_name = st.text_input(
+            "新しいVector Store名",
+            value="rag_assistant_demo_store",
+        )
+
+        if st.button("新しいVector Storeを作成して使用"):
+            if not new_vector_store_name.strip():
+                st.warning("Vector Store名を入力してください。")
+            else:
+                with st.spinner("新しいVector Storeを作成しています..."):
+                    try:
+                        result = create_vector_store(
+                            client=client,
+                            name=new_vector_store_name.strip(),
+                        )
+
+                        st.session_state["active_vector_store_id"] = result[
+                            "vector_store_id"
+                        ]
+                        st.session_state["registered_files"] = []
+
+                        st.success("新しいVector Storeを作成し、使用対象に切り替えました。")
+                        st.json(result)
+                        st.info(
+                            "このVector Storeを次回以降も使う場合は、"
+                            ".env の VECTOR_STORE_ID にこのIDを貼り替えてください。"
+                        )
+
+                        st.rerun()
+
+                    except Exception as e:
+                        st.error("Vector Store作成中にエラーが発生しました。")
+                        st.exception(e)
+
+        st.markdown("---")
+        st.header("回答設定")
+
+        max_num_results = st.selectbox(
+            "検索件数",
+            options=[3, 5, 8, 10],
+            index=1,
+            help="質問に対して、Vector Storeから取得する根拠候補の最大件数です。",
+        )
+
+        answer_style = st.selectbox(
+            "回答スタイル",
+            options=["簡潔", "詳細", "箇条書き", "発表用"],
+            index=0,
+            help="同じ検索結果でも、回答の書き方を切り替えられます。",
+        )
+
+        st.caption(
+            "検索件数を増やすと根拠候補は増えますが、関係の薄い情報も混ざる可能性があります。"
+        )
 
         st.markdown("---")
         st.header("資料アップロード")
@@ -408,7 +558,7 @@ def main():
                         result = upload_file_to_vector_store(
                             client=client,
                             uploaded_file=uploaded_file,
-                            vector_store_id=vector_store_id,
+                            vector_store_id=active_vector_store_id,
                         )
 
                         st.success("資料の追加が完了しました。")
@@ -431,7 +581,7 @@ def main():
                 try:
                     registered_files = list_vector_store_files(
                         client=client,
-                        vector_store_id=vector_store_id,
+                        vector_store_id=active_vector_store_id,
                     )
 
                     st.session_state["registered_files"] = registered_files
@@ -476,7 +626,7 @@ def main():
                             try:
                                 delete_result = remove_file_from_vector_store(
                                     client=client,
-                                    vector_store_id=vector_store_id,
+                                    vector_store_id=active_vector_store_id,
                                     file_id=file_id,
                                 )
 
@@ -494,7 +644,7 @@ def main():
 
         st.markdown("---")
         st.caption(
-            "現在は、登録済みVector Storeに資料を追加し、その資料群に対して質問する構成です。"
+            "現在使用中のVector Storeに資料を追加し、その資料群に対して質問する構成です。"
         )
 
     st.subheader("質問")
@@ -534,7 +684,9 @@ def main():
                     client=client,
                     question=question,
                     model=model,
-                    vector_store_id=vector_store_id,
+                    vector_store_id=active_vector_store_id,
+                    max_num_results=max_num_results,
+                    answer_style=answer_style,
                 )
             except Exception as e:
                 st.error("質問応答中にエラーが発生しました。")
@@ -546,6 +698,9 @@ def main():
             question=question,
             answer=answer,
             search_results=search_results,
+            max_num_results=max_num_results,
+            answer_style=answer_style,
+            vector_store_id=active_vector_store_id,
         )
 
         st.subheader("回答")
