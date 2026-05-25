@@ -369,9 +369,8 @@ def render_search_results(search_results: list[dict[str, str]]) -> None:
 
 def render_qa_history() -> None:
     """
-    質問・回答履歴を画面下部に表示する。
+    質問・回答履歴を画面に表示する。
     """
-    st.markdown("---")
     st.subheader("質問・回答履歴")
 
     qa_history = st.session_state.get("qa_history", [])
@@ -429,6 +428,90 @@ def render_qa_history() -> None:
             st.write(f"{len(search_results)} 件")
 
             render_search_results(search_results)
+
+
+def render_app_overview(
+    model: str,
+    env_vector_store_id: str,
+    active_vector_store_id: str,
+) -> None:
+    """
+    アプリ概要タブを表示する。
+    発表デモ時に「このアプリは何ができるか」を説明しやすくする。
+    """
+    st.subheader("アプリ概要")
+
+    st.markdown(
+        """
+        このアプリは、登録した資料に基づいて質問応答を行う
+        **根拠提示型RAGアプリのプロトタイプ**です。
+        """
+    )
+
+    st.markdown("### 現在できること")
+
+    st.markdown(
+        """
+        - 資料ファイル（txt / md / pdf）をアップロードできる
+        - アップロードした資料をVector Storeに登録できる
+        - 登録済み資料の一覧を確認できる
+        - 不要な資料を検索対象から外せる
+        - 登録資料に基づいて質問応答できる
+        - 回答の根拠候補を表示できる
+        - 質問・回答履歴を画面上に残せる
+        - 質問・回答履歴をJSONでダウンロードできる
+        - 検索件数と回答スタイルを調整できる
+        - Vector Storeを新規作成して、資料セットを切り替えられる
+        """
+    )
+
+    st.markdown("### 現在の設定")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.write("使用モデル")
+        st.code(model)
+
+        st.write(".env の Vector Store ID")
+        st.code(env_vector_store_id)
+
+    with col2:
+        st.write("現在使用中の Vector Store ID")
+        st.code(active_vector_store_id)
+
+        if active_vector_store_id != env_vector_store_id:
+            st.warning(
+                "現在は .env とは別のVector Storeを一時的に使用しています。"
+            )
+        else:
+            st.success(".env に設定されたVector Storeを使用しています。")
+
+    st.markdown("### 現時点の注意点")
+
+    st.markdown(
+        """
+        - スキャンPDFや画像PDFは、そのままだと検索対象としてうまく扱えない場合がある
+        - その場合は、OCRでテキスト化してから登録する必要がある
+        - 「資料内では確認できません」という判定は、現段階では主にプロンプト制御に依存している
+        - 今後は検索スコアや根拠文の有無を使った回答可能性判定を追加できる
+        - 本文プレビューはAPIの返却形式によって取得できない場合がある
+        """
+    )
+
+    st.markdown("### 今後の拡張案")
+
+    st.markdown(
+        """
+        - OCR前処理
+        - 回答可能性チェック
+        - 根拠箇所の引用表示の安定化
+        - 質問ログ分析
+        - 音声入力・音声読み上げ
+        - デモ用資料セットの整備
+        - READMEと発表スライドの整備
+        """
+    )
 
 
 def main():
@@ -647,69 +730,79 @@ def main():
             "現在使用中のVector Storeに資料を追加し、その資料群に対して質問する構成です。"
         )
 
-    st.subheader("質問")
-
-    example_questions = [
-        "この展示の目的は何ですか？",
-        "RAGを使う理由は何ですか？",
-        "スキャンPDFを扱うときの課題は何ですか？",
-        "この展示の入場料はいくらですか？",
-    ]
-
-    selected_example = st.selectbox(
-        "サンプル質問を選ぶ",
-        [""] + example_questions,
+    tab_question, tab_history, tab_overview = st.tabs(
+        ["質問", "履歴", "アプリ概要"]
     )
 
-    default_question = selected_example if selected_example else ""
+    with tab_question:
+        st.subheader("質問")
 
-    with st.form("question_form"):
-        question = st.text_area(
-            "資料に対する質問を入力してください",
-            value=default_question,
-            height=120,
+        example_questions = [
+            "この展示の目的は何ですか？",
+            "RAGを使う理由は何ですか？",
+            "スキャンPDFを扱うときの課題は何ですか？",
+            "この展示の入場料はいくらですか？",
+        ]
+
+        selected_example = st.selectbox(
+            "サンプル質問を選ぶ",
+            [""] + example_questions,
         )
 
-        submitted = st.form_submit_button("質問する")
+        default_question = selected_example if selected_example else ""
 
-    if submitted:
-        if not question.strip():
-            st.warning("質問を入力してください。")
-            render_qa_history()
-            return
+        with st.form("question_form"):
+            question = st.text_area(
+                "資料に対する質問を入力してください",
+                value=default_question,
+                height=120,
+            )
 
-        with st.spinner("資料を検索して回答を生成しています..."):
-            try:
-                answer, search_results = ask_rag(
-                    client=client,
+            submitted = st.form_submit_button("質問する")
+
+        if submitted:
+            if not question.strip():
+                st.warning("質問を入力してください。")
+            else:
+                with st.spinner("資料を検索して回答を生成しています..."):
+                    try:
+                        answer, search_results = ask_rag(
+                            client=client,
+                            question=question,
+                            model=model,
+                            vector_store_id=active_vector_store_id,
+                            max_num_results=max_num_results,
+                            answer_style=answer_style,
+                        )
+                    except Exception as e:
+                        st.error("質問応答中にエラーが発生しました。")
+                        st.exception(e)
+                        return
+
+                add_qa_history(
                     question=question,
-                    model=model,
-                    vector_store_id=active_vector_store_id,
+                    answer=answer,
+                    search_results=search_results,
                     max_num_results=max_num_results,
                     answer_style=answer_style,
+                    vector_store_id=active_vector_store_id,
                 )
-            except Exception as e:
-                st.error("質問応答中にエラーが発生しました。")
-                st.exception(e)
-                render_qa_history()
-                return
 
-        add_qa_history(
-            question=question,
-            answer=answer,
-            search_results=search_results,
-            max_num_results=max_num_results,
-            answer_style=answer_style,
-            vector_store_id=active_vector_store_id,
+                st.subheader("回答")
+                st.write(answer)
+
+                st.subheader("検索された根拠候補")
+                render_search_results(search_results)
+
+    with tab_history:
+        render_qa_history()
+
+    with tab_overview:
+        render_app_overview(
+            model=model,
+            env_vector_store_id=env_vector_store_id,
+            active_vector_store_id=active_vector_store_id,
         )
-
-        st.subheader("回答")
-        st.write(answer)
-
-        st.subheader("検索された根拠候補")
-        render_search_results(search_results)
-
-    render_qa_history()
 
 
 if __name__ == "__main__":
