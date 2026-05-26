@@ -5,3 +5,4 @@ __pycache__/
 vectorstore/
 temp_uploads/
 .DS_Store
+app_data/

@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -8,6 +9,18 @@ from typing import Any
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
+
+from storage import (
+    append_qa_log,
+    clear_qa_logs,
+    create_saved_logs_json,
+    delete_vector_store_from_registry,
+    load_qa_logs,
+    load_vector_store_registry,
+    mark_vector_store_used,
+    now_iso,
+    upsert_vector_store_registry,
+)
 
 
 TEMP_UPLOAD_DIR = Path("temp_uploads")
@@ -53,9 +66,44 @@ def init_session_state() -> None:
 def ensure_active_vector_store(env_vector_store_id: str) -> None:
     """
     使用中のVector Store IDが未設定なら、.env の VECTOR_STORE_ID を使う。
+    また、.env のVector Storeも管理台帳に登録する。
     """
     if not st.session_state.get("active_vector_store_id"):
         st.session_state["active_vector_store_id"] = env_vector_store_id
+
+    upsert_vector_store_registry(
+        vector_store_id=env_vector_store_id,
+        name="env_default_store",
+        memo=".env に設定されているデフォルトのVector Store",
+        source="env",
+    )
+
+
+def sanitize_filename(filename: str) -> str:
+    """
+    入力された資料名を、安全なファイル名に変換する。
+    Windowsで使えない文字などを避ける。
+    """
+    filename = filename.strip()
+
+    if not filename:
+        filename = "direct_text_note"
+
+    filename = re.sub(r'[\\/:*?"<>|]', "_", filename)
+    filename = re.sub(r"\s+", "_", filename)
+
+    if not filename.endswith(".txt"):
+        filename += ".txt"
+
+    return filename
+
+
+def is_valid_vector_store_id(vector_store_id: str) -> bool:
+    """
+    Vector Store IDらしい形式か簡易チェックする。
+    厳密なAPI確認ではなく、入力ミスを減らすためのチェック。
+    """
+    return vector_store_id.strip().startswith("vs_")
 
 
 def get_answer_style_instruction(answer_style: str) -> str:
@@ -94,10 +142,10 @@ def add_qa_history(
 ) -> None:
     """
     質問・回答・根拠候補・回答設定を履歴に追加する。
-    新しい履歴ほど上に表示したいので、先頭に追加する。
+    画面上の履歴に加えて、ローカルログにも保存する。
     """
     history_item = {
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "timestamp": now_iso(),
         "question": question,
         "answer": answer,
         "settings": {
@@ -109,16 +157,16 @@ def add_qa_history(
     }
 
     st.session_state["qa_history"].insert(0, history_item)
+    append_qa_log(history_item)
 
 
 def create_history_json() -> str:
     """
-    質問・回答履歴をJSON文字列として出力する。
-    発表準備や開発ログに使えるようにする。
+    現在のセッション中の質問・回答履歴をJSON文字列として出力する。
     """
     export_data = {
         "app_name": "RAG Assistant Prototype",
-        "exported_at": datetime.now().isoformat(timespec="seconds"),
+        "exported_at": now_iso(),
         "history": st.session_state.get("qa_history", []),
     }
 
@@ -182,36 +230,26 @@ def create_vector_store(
     }
 
 
-def upload_file_to_vector_store(
+def upload_path_to_vector_store(
     client: OpenAI,
-    uploaded_file: Any,
+    file_path: Path,
     vector_store_id: str,
 ) -> dict[str, str]:
     """
-    StreamlitでアップロードされたファイルをOpenAIにアップロードし、
-    指定したVector Storeに追加する。
+    ローカルファイルをOpenAI Files APIにアップロードし、
+    指定したVector Storeに追加する共通処理。
     """
-    TEMP_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
-    temp_path = TEMP_UPLOAD_DIR / uploaded_file.name
-
-    # Streamlitのアップロードファイルを一時保存する
-    temp_path.write_bytes(uploaded_file.getvalue())
-
-    # 1. OpenAI Files API にアップロード
-    with temp_path.open("rb") as f:
+    with file_path.open("rb") as f:
         openai_file = client.files.create(
             file=f,
             purpose="assistants",
         )
 
-    # 2. Vector Storeに追加
     vector_store_file = client.vector_stores.files.create(
         vector_store_id=vector_store_id,
         file_id=openai_file.id,
     )
 
-    # 3. 処理完了まで待つ
     status = vector_store_file.status
 
     while status not in ["completed", "failed", "cancelled"]:
@@ -228,11 +266,60 @@ def upload_file_to_vector_store(
         raise RuntimeError(f"ファイル処理に失敗しました。status={status}")
 
     return {
-        "filename": uploaded_file.name,
+        "filename": file_path.name,
         "file_id": openai_file.id,
         "vector_store_id": vector_store_id,
         "status": status,
     }
+
+
+def upload_file_to_vector_store(
+    client: OpenAI,
+    uploaded_file: Any,
+    vector_store_id: str,
+) -> dict[str, str]:
+    """
+    Streamlitでアップロードされたファイルを一時保存し、
+    既存のVector Storeに追加する。
+    """
+    TEMP_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    temp_path = TEMP_UPLOAD_DIR / uploaded_file.name
+    temp_path.write_bytes(uploaded_file.getvalue())
+
+    return upload_path_to_vector_store(
+        client=client,
+        file_path=temp_path,
+        vector_store_id=vector_store_id,
+    )
+
+
+def upload_text_to_vector_store(
+    client: OpenAI,
+    title: str,
+    text: str,
+    vector_store_id: str,
+) -> dict[str, str]:
+    """
+    画面に直接入力されたテキストを .txt ファイルとして一時保存し、
+    Vector Storeに追加する。
+    """
+    if not text.strip():
+        raise ValueError("登録するテキストが空です。")
+
+    TEMP_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    safe_filename = sanitize_filename(title)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    temp_path = TEMP_UPLOAD_DIR / f"{timestamp}_{safe_filename}"
+
+    temp_path.write_text(text, encoding="utf-8")
+
+    return upload_path_to_vector_store(
+        client=client,
+        file_path=temp_path,
+        vector_store_id=vector_store_id,
+    )
 
 
 def list_vector_store_files(
@@ -341,6 +428,8 @@ def ask_rag(
     answer = response.output_text
     search_results = extract_file_search_results(response)
 
+    mark_vector_store_used(vector_store_id)
+
     return answer, search_results
 
 
@@ -367,18 +456,18 @@ def render_search_results(search_results: list[dict[str, str]]) -> None:
                 st.info("本文プレビューは取得できませんでした。")
 
 
-def render_qa_history() -> None:
+def render_session_history() -> None:
     """
-    質問・回答履歴を画面に表示する。
+    現在のアプリ起動中の質問・回答履歴を表示する。
     """
-    st.subheader("質問・回答履歴")
+    st.subheader("このセッションの質問・回答履歴")
 
     qa_history = st.session_state.get("qa_history", [])
 
     col1, col2 = st.columns([1, 2])
 
     with col1:
-        if st.button("履歴をクリア"):
+        if st.button("セッション履歴をクリア"):
             st.session_state["qa_history"] = []
             st.rerun()
 
@@ -387,47 +476,108 @@ def render_qa_history() -> None:
             history_json = create_history_json()
 
             st.download_button(
-                label="履歴をJSONでダウンロード",
+                label="セッション履歴をJSONでダウンロード",
                 data=history_json,
-                file_name="qa_history.json",
+                file_name="qa_history_session.json",
                 mime="application/json",
             )
 
     if not qa_history:
-        st.info("まだ質問履歴はありません。")
+        st.info("このセッションの質問履歴はまだありません。")
         return
 
     st.write(f"{len(qa_history)} 件の質問履歴があります。")
 
     for i, item in enumerate(qa_history, start=1):
-        timestamp = item.get("timestamp", "no timestamp")
-        question_text = item["question"]
-        answer_text = item["answer"]
-        search_results = item["search_results"]
-        settings = item.get("settings", {})
+        render_history_item(i, item)
 
-        max_num_results = settings.get("max_num_results", "unknown")
-        answer_style = settings.get("answer_style", "unknown")
-        vector_store_id = settings.get("vector_store_id", "unknown")
 
-        with st.expander(f"履歴 {i}: {question_text[:40]}"):
-            st.caption(f"日時: {timestamp}")
+def render_saved_logs() -> None:
+    """
+    ローカル保存済みの質問ログを表示する。
+    """
+    st.subheader("ローカル保存済み質問ログ")
 
-            st.markdown("**回答設定**")
-            st.write(f"- 検索件数: {max_num_results}")
-            st.write(f"- 回答スタイル: {answer_style}")
-            st.write(f"- 使用Vector Store: `{vector_store_id}`")
+    col1, col2 = st.columns([1, 2])
 
-            st.markdown("**質問**")
-            st.write(question_text)
+    saved_logs = load_qa_logs(limit=50)
 
-            st.markdown("**回答**")
-            st.write(answer_text)
+    with col1:
+        if st.button("保存済みログをクリア"):
+            clear_qa_logs()
+            st.success("保存済みログを削除しました。")
+            st.rerun()
 
-            st.markdown("**根拠候補**")
-            st.write(f"{len(search_results)} 件")
+    with col2:
+        if saved_logs:
+            logs_json = create_saved_logs_json(limit=0)
 
-            render_search_results(search_results)
+            st.download_button(
+                label="保存済みログをJSONでダウンロード",
+                data=logs_json,
+                file_name="qa_logs_saved.json",
+                mime="application/json",
+            )
+
+    if not saved_logs:
+        st.info("ローカル保存済みログはまだありません。")
+        return
+
+    st.write(f"最新50件のうち {len(saved_logs)} 件を表示しています。")
+
+    for i, item in enumerate(saved_logs, start=1):
+        render_history_item(i, item)
+
+
+def render_history_item(index: int, item: dict[str, Any]) -> None:
+    """
+    1件分の質問・回答履歴を表示する。
+    """
+    timestamp = item.get("timestamp", "no timestamp")
+    question_text = item.get("question", "")
+    answer_text = item.get("answer", "")
+    search_results = item.get("search_results", [])
+    settings = item.get("settings", {})
+
+    max_num_results = settings.get("max_num_results", "unknown")
+    answer_style = settings.get("answer_style", "unknown")
+    vector_store_id = settings.get("vector_store_id", "unknown")
+
+    with st.expander(f"履歴 {index}: {question_text[:40]}"):
+        st.caption(f"日時: {timestamp}")
+
+        st.markdown("**回答設定**")
+        st.write(f"- 検索件数: {max_num_results}")
+        st.write(f"- 回答スタイル: {answer_style}")
+        st.write(f"- 使用Vector Store: `{vector_store_id}`")
+
+        st.markdown("**質問**")
+        st.write(question_text)
+
+        st.markdown("**回答**")
+        st.write(answer_text)
+
+        st.markdown("**根拠候補**")
+        st.write(f"{len(search_results)} 件")
+
+        render_search_results(search_results)
+
+
+def render_history_page() -> None:
+    """
+    履歴タブ全体を表示する。
+    """
+    st.header("履歴")
+
+    tab_session, tab_saved = st.tabs(
+        ["このセッションの履歴", "保存済みログ"]
+    )
+
+    with tab_session:
+        render_session_history()
+
+    with tab_saved:
+        render_saved_logs()
 
 
 def render_app_overview(
@@ -453,15 +603,19 @@ def render_app_overview(
     st.markdown(
         """
         - 資料ファイル（txt / md / pdf）をアップロードできる
+        - 画面に直接入力したテキストを資料として登録できる
         - アップロードした資料をVector Storeに登録できる
         - 登録済み資料の一覧を確認できる
         - 不要な資料を検索対象から外せる
         - 登録資料に基づいて質問応答できる
         - 回答の根拠候補を表示できる
         - 質問・回答履歴を画面上に残せる
+        - 質問・回答ログをローカルに自動保存できる
         - 質問・回答履歴をJSONでダウンロードできる
         - 検索件数と回答スタイルを調整できる
         - Vector Storeを新規作成して、資料セットを切り替えられる
+        - 既存のVector Store IDを手入力で管理台帳に追加できる
+        - Vector Storeの管理情報をローカルに保存できる
         """
     )
 
@@ -491,11 +645,13 @@ def render_app_overview(
 
     st.markdown(
         """
+        - 現在のVector StoreはOpenAI側に作成されるため、科学館実用版ではローカル化・閉域化が重要になる
         - スキャンPDFや画像PDFは、そのままだと検索対象としてうまく扱えない場合がある
         - その場合は、OCRでテキスト化してから登録する必要がある
         - 「資料内では確認できません」という判定は、現段階では主にプロンプト制御に依存している
         - 今後は検索スコアや根拠文の有無を使った回答可能性判定を追加できる
         - 本文プレビューはAPIの返却形式によって取得できない場合がある
+        - 質問ログには質問内容・回答内容が残るため、実運用時には個人情報やログ管理方針が必要になる
         """
     )
 
@@ -503,6 +659,8 @@ def render_app_overview(
 
     st.markdown(
         """
+        - ローカルVector DBへの移行
+        - ローカルLLMによる閉域構成
         - OCR前処理
         - 回答可能性チェック
         - 根拠箇所の引用表示の安定化
@@ -512,6 +670,150 @@ def render_app_overview(
         - READMEと発表スライドの整備
         """
     )
+
+
+def render_vector_store_registry_panel() -> None:
+    """
+    ローカル保存されたVector Store管理情報を表示し、切り替えできるようにする。
+    """
+    st.header("Vector Store管理")
+
+    st.markdown(
+        """
+        ここでは、OpenAI上に作成済みのVector Store IDをローカル台帳として管理します。
+        Vector Store本体をローカル保存するのではなく、ID・名前・用途メモを保存して切り替えやすくします。
+        """
+    )
+
+    st.subheader("既存Vector Store IDを登録")
+
+    manual_name = st.text_input(
+        "表示名",
+        value="existing_vector_store",
+        key="manual_vector_store_name",
+    )
+
+    manual_vector_store_id = st.text_input(
+        "Vector Store ID",
+        placeholder="vs_...",
+        key="manual_vector_store_id",
+    )
+
+    manual_memo = st.text_area(
+        "用途メモ",
+        value="過去に作成したVector Store",
+        height=80,
+        key="manual_vector_store_memo",
+    )
+
+    col_add, col_switch = st.columns(2)
+
+    with col_add:
+        if st.button("管理台帳に追加"):
+            target_id = manual_vector_store_id.strip()
+
+            if not is_valid_vector_store_id(target_id):
+                st.warning("Vector Store IDは `vs_` から始まる形式で入力してください。")
+            elif not manual_name.strip():
+                st.warning("表示名を入力してください。")
+            else:
+                upsert_vector_store_registry(
+                    vector_store_id=target_id,
+                    name=manual_name.strip(),
+                    memo=manual_memo.strip(),
+                    source="manual",
+                )
+
+                st.success("Vector Storeを管理台帳に追加しました。")
+                st.rerun()
+
+    with col_switch:
+        if st.button("追加してすぐ使用"):
+            target_id = manual_vector_store_id.strip()
+
+            if not is_valid_vector_store_id(target_id):
+                st.warning("Vector Store IDは `vs_` から始まる形式で入力してください。")
+            elif not manual_name.strip():
+                st.warning("表示名を入力してください。")
+            else:
+                upsert_vector_store_registry(
+                    vector_store_id=target_id,
+                    name=manual_name.strip(),
+                    memo=manual_memo.strip(),
+                    source="manual",
+                )
+
+                st.session_state["active_vector_store_id"] = target_id
+                st.session_state["registered_files"] = []
+                mark_vector_store_used(target_id)
+
+                st.success("Vector Storeを管理台帳に追加し、使用対象に切り替えました。")
+                st.rerun()
+
+    st.markdown("---")
+
+    registry = load_vector_store_registry()
+
+    if not registry:
+        st.info("まだVector Store管理情報は保存されていません。")
+        return
+
+    st.subheader("登録済みVector Store")
+
+    st.write(f"{len(registry)} 件のVector Storeがローカルに記録されています。")
+
+    for i, item in enumerate(registry, start=1):
+        name = item.get("name", "unknown")
+        vector_store_id = item.get("vector_store_id", "unknown")
+        memo = item.get("memo", "")
+        source = item.get("source", "unknown")
+        created_at = item.get("created_at", "")
+        updated_at = item.get("updated_at", "")
+        last_used_at = item.get("last_used_at", "")
+
+        with st.expander(f"{name} / {vector_store_id}"):
+            st.write("用途メモ")
+            st.write(memo if memo else "メモなし")
+
+            st.write("source")
+            st.code(source)
+
+            st.write("created_at")
+            st.code(created_at if created_at else "unknown")
+
+            st.write("updated_at")
+            st.code(updated_at if updated_at else "unknown")
+
+            st.write("last_used_at")
+            st.code(last_used_at if last_used_at else "まだ使用記録なし")
+
+            col_use, col_remove = st.columns(2)
+
+            with col_use:
+                if st.button(
+                    "このVector Storeに切り替える",
+                    key=f"switch_vector_store_{i}_{vector_store_id}",
+                ):
+                    st.session_state["active_vector_store_id"] = vector_store_id
+                    st.session_state["registered_files"] = []
+                    mark_vector_store_used(vector_store_id)
+                    st.success("使用するVector Storeを切り替えました。")
+                    st.rerun()
+
+            with col_remove:
+                if st.button(
+                    "ローカル台帳から削除",
+                    key=f"remove_registry_{i}_{vector_store_id}",
+                ):
+                    if vector_store_id == st.session_state.get("active_vector_store_id"):
+                        st.warning(
+                            "現在使用中のVector Storeは台帳から削除できません。"
+                            "別のVector Storeに切り替えてから削除してください。"
+                        )
+                    else:
+                        delete_vector_store_from_registry(vector_store_id)
+                        st.success("ローカル台帳から削除しました。")
+                        st.rerun()
 
 
 def main():
@@ -563,6 +865,7 @@ def main():
         if st.button(".env のVector Storeに戻す"):
             st.session_state["active_vector_store_id"] = env_vector_store_id
             st.session_state["registered_files"] = []
+            mark_vector_store_used(env_vector_store_id)
             st.rerun()
 
         st.markdown("---")
@@ -571,6 +874,12 @@ def main():
         new_vector_store_name = st.text_input(
             "新しいVector Store名",
             value="rag_assistant_demo_store",
+        )
+
+        new_vector_store_memo = st.text_area(
+            "用途メモ",
+            value="発表デモ用の資料セット",
+            height=80,
         )
 
         if st.button("新しいVector Storeを作成して使用"):
@@ -584,9 +893,18 @@ def main():
                             name=new_vector_store_name.strip(),
                         )
 
-                        st.session_state["active_vector_store_id"] = result[
-                            "vector_store_id"
-                        ]
+                        new_vector_store_id = result["vector_store_id"]
+
+                        upsert_vector_store_registry(
+                            vector_store_id=new_vector_store_id,
+                            name=new_vector_store_name.strip(),
+                            memo=new_vector_store_memo.strip(),
+                            source="app",
+                        )
+
+                        mark_vector_store_used(new_vector_store_id)
+
+                        st.session_state["active_vector_store_id"] = new_vector_store_id
                         st.session_state["registered_files"] = []
 
                         st.success("新しいVector Storeを作成し、使用対象に切り替えました。")
@@ -624,7 +942,9 @@ def main():
         )
 
         st.markdown("---")
-        st.header("資料アップロード")
+        st.header("資料登録")
+
+        st.subheader("ファイルから登録")
 
         uploaded_file = st.file_uploader(
             "検索対象に追加する資料を選んでください",
@@ -635,7 +955,7 @@ def main():
             st.write("選択中のファイル")
             st.code(uploaded_file.name)
 
-            if st.button("この資料をVector Storeに追加"):
+            if st.button("このファイルをVector Storeに追加"):
                 with st.spinner("資料をアップロードして検索可能にしています..."):
                     try:
                         result = upload_file_to_vector_store(
@@ -648,12 +968,51 @@ def main():
                         st.write("追加結果")
                         st.json(result)
 
-                        # ファイル一覧のキャッシュを消す。
-                        # 次に一覧更新ボタンを押したとき、新しい状態を取得できる。
                         st.session_state["registered_files"] = []
 
                     except Exception as e:
                         st.error("資料の追加中にエラーが発生しました。")
+                        st.exception(e)
+
+        st.markdown("---")
+        st.subheader("テキストを直接登録")
+
+        direct_text_title = st.text_input(
+            "資料名",
+            value="direct_note",
+            help="Vector Storeに登録される一時ファイル名の一部になります。",
+        )
+
+        direct_text = st.text_area(
+            "登録するテキスト",
+            height=180,
+            placeholder=(
+                "ここに資料として登録したい文章を入力してください。\n"
+                "例: この展示では、星座の見つけ方と季節ごとの星空の違いを説明する。"
+            ),
+        )
+
+        if st.button("このテキストをVector Storeに追加"):
+            if not direct_text.strip():
+                st.warning("登録するテキストを入力してください。")
+            else:
+                with st.spinner("入力テキストを資料として登録しています..."):
+                    try:
+                        result = upload_text_to_vector_store(
+                            client=client,
+                            title=direct_text_title,
+                            text=direct_text,
+                            vector_store_id=active_vector_store_id,
+                        )
+
+                        st.success("テキスト資料の追加が完了しました。")
+                        st.write("追加結果")
+                        st.json(result)
+
+                        st.session_state["registered_files"] = []
+
+                    except Exception as e:
+                        st.error("テキスト資料の追加中にエラーが発生しました。")
                         st.exception(e)
 
         st.markdown("---")
@@ -730,8 +1089,8 @@ def main():
             "現在使用中のVector Storeに資料を追加し、その資料群に対して質問する構成です。"
         )
 
-    tab_question, tab_history, tab_overview = st.tabs(
-        ["質問", "履歴", "アプリ概要"]
+    tab_question, tab_history, tab_vector_stores, tab_overview = st.tabs(
+        ["質問", "履歴", "Vector Store管理", "アプリ概要"]
     )
 
     with tab_question:
@@ -795,7 +1154,10 @@ def main():
                 render_search_results(search_results)
 
     with tab_history:
-        render_qa_history()
+        render_history_page()
+
+    with tab_vector_stores:
+        render_vector_store_registry_panel()
 
     with tab_overview:
         render_app_overview(
