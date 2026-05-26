@@ -143,6 +143,59 @@ def render_search_results(search_results: list[dict[str, str]]) -> None:
             else:
                 st.info("本文プレビューは取得できませんでした。")
 
+def render_reliability_note(
+    answer: str,
+    search_results: list[dict[str, str]],
+) -> None:
+    """
+    回答の信頼性に関する簡易メモを表示する。
+    これは厳密な回答可能性判定ではなく、発表・検証用の補助表示。
+    """
+    st.subheader("回答信頼性メモ")
+
+    no_answer_phrases = [
+        "資料内では確認できません",
+        "資料内で確認できません",
+        "確認できません",
+        "記載されていません",
+        "情報はありません",
+    ]
+
+    seems_no_answer = any(phrase in answer for phrase in no_answer_phrases)
+
+    if not search_results:
+        st.warning(
+            "根拠候補が取得できませんでした。"
+            "この回答は登録資料に基づいているか確認が難しいため、注意が必要です。"
+        )
+        return
+
+    st.info(
+        f"{len(search_results)} 件の根拠候補が検索されました。"
+        "回答は、これらの候補をもとに生成されています。"
+    )
+
+    if seems_no_answer:
+        st.success(
+            "回答文に「資料内では確認できません」系の表現が含まれています。"
+            "資料外質問に対して、推測を抑制できている可能性があります。"
+        )
+    else:
+        st.info(
+            "回答文は通常回答として生成されています。"
+            "現段階では、回答が本当に資料内根拠だけで十分かは、"
+            "下の根拠候補を見て確認する必要があります。"
+        )
+
+    missing_preview_count = sum(
+        1 for result in search_results if not result.get("preview")
+    )
+
+    if missing_preview_count > 0:
+        st.caption(
+            f"補足: {missing_preview_count} 件の根拠候補では本文プレビューを取得できませんでした。"
+            "APIの返却形式によって、本文断片が表示できない場合があります。"
+        )
 
 def render_history_item(index: int, item: dict[str, Any]) -> None:
     """
@@ -861,9 +914,14 @@ def main():
                 st.subheader("回答")
                 st.write(answer)
 
+                render_reliability_note(
+                    answer=answer,
+                    search_results=search_results,
+                )
+
                 st.subheader("検索された根拠候補")
                 render_search_results(search_results)
-
+                
     with tab_history:
         render_history_page()
 
