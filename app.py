@@ -788,19 +788,36 @@ def main():
     with tab_question:
         st.subheader("質問")
 
-        example_questions = [
-            "この展示の目的は何ですか？",
-            "RAGを使う理由は何ですか？",
-            "スキャンPDFを扱うときの課題は何ですか？",
-            "この展示の入場料はいくらですか？",
-        ]
+        demo_questions = {
+            "1. システムの目的": "このシステムの目的は何ですか？",
+            "2. RAGを使う理由": "なぜRAGを使うのですか？",
+            "3. 季節ごとの星座": "春と冬の代表的な星座を教えてください。",
+            "4. 星の色の違い": "星の色が違うのはなぜですか？",
+            "5. スキャンPDFの課題": "スキャンPDFを扱うときの課題は何ですか？",
+            "6. ローカルLLMの必要性": "科学館実用版でローカルLLMが重要になる理由は何ですか？",
+            "7. 今後の開発方針": "今後の開発方針を短期・中期・長期に分けて教えてください。",
+            "8. 資料外質問：入場料": "この展示の入場料はいくらですか？",
+            "9. 資料外質問：開館時間": "科学館の開館時間を教えてください。",
+        }
 
-        selected_example = st.selectbox(
-            "サンプル質問を選ぶ",
-            [""] + example_questions,
+        selected_label = st.selectbox(
+            "デモ質問を選ぶ",
+            ["自由入力"] + list(demo_questions.keys()),
         )
 
-        default_question = selected_example if selected_example else ""
+        default_question = (
+            ""
+            if selected_label == "自由入力"
+            else demo_questions[selected_label]
+        )
+
+        if selected_label.startswith("8.") or selected_label.startswith("9."):
+            st.info(
+                "これは資料外質問の確認用です。資料に情報がないため、"
+                "「資料内では確認できません」と返るのが期待される挙動です。"
+            )
+        else:
+            st.caption("資料内に根拠がある想定のデモ質問です。")
 
         with st.form("question_form"):
             question = st.text_area(

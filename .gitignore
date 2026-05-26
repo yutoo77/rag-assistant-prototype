@@ -2,7 +2,12 @@
 .env
 __pycache__/
 *.pyc
-vectorstore/
 temp_uploads/
-.DS_Store
 app_data/
+demo_docs/
+private_docs/
+demo_docs_private/
+.DS_Store
+
+data/raw/*
+!data/raw/.gitkeep
