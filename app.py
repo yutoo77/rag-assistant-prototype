@@ -326,6 +326,163 @@ def render_saved_logs() -> None:
     for i, item in enumerate(saved_logs, start=1):
         render_history_item(i, item)
 
+def is_no_answer_like(answer: str) -> bool:
+    """
+    回答が「資料内では確認できません」系かどうかを簡易判定する。
+    厳密な分類ではなく、ログ分析用の補助判定。
+    """
+    no_answer_phrases = [
+        "資料内では確認できません",
+        "資料内で確認できません",
+        "確認できません",
+        "記載されていません",
+        "情報はありません",
+    ]
+
+    return any(phrase in answer for phrase in no_answer_phrases)
+
+
+def count_by_key(items: list[dict[str, Any]], key_func) -> dict[str, int]:
+    """
+    任意のキーごとに件数を集計する補助関数。
+    """
+    counts: dict[str, int] = {}
+
+    for item in items:
+        key = str(key_func(item))
+        counts[key] = counts.get(key, 0) + 1
+
+    return counts
+
+
+def render_count_table(title: str, counts: dict[str, int]) -> None:
+    """
+    集計結果を表形式で表示する。
+    """
+    st.markdown(f"**{title}**")
+
+    if not counts:
+        st.info("集計対象がありません。")
+        return
+
+    rows = [
+        {"項目": key, "件数": value}
+        for key, value in sorted(
+            counts.items(),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+    ]
+
+    st.table(rows)
+
+
+def render_saved_log_analysis() -> None:
+    """
+    ローカル保存済み質問ログの簡易分析を表示する。
+    """
+    st.header("質問ログ分析")
+
+    saved_logs = load_qa_logs(limit=0)
+
+    if not saved_logs:
+        st.info("分析対象の保存済みログはまだありません。")
+        return
+
+    total_count = len(saved_logs)
+
+    no_answer_count = sum(
+        1 for item in saved_logs if is_no_answer_like(item.get("answer", ""))
+    )
+    normal_answer_count = total_count - no_answer_count
+
+    vector_store_counts = count_by_key(
+        saved_logs,
+        lambda item: item.get("settings", {}).get("vector_store_id", "unknown"),
+    )
+
+    answer_style_counts = count_by_key(
+        saved_logs,
+        lambda item: item.get("settings", {}).get("answer_style", "unknown"),
+    )
+
+    max_results_counts = count_by_key(
+        saved_logs,
+        lambda item: item.get("settings", {}).get("max_num_results", "unknown"),
+    )
+
+    search_result_count_groups = count_by_key(
+        saved_logs,
+        lambda item: len(item.get("search_results", [])),
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("保存済み質問数", total_count)
+
+    with col2:
+        st.metric("通常回答数", normal_answer_count)
+
+    with col3:
+        st.metric("確認不可系回答数", no_answer_count)
+
+    with col4:
+        st.metric("使用Vector Store数", len(vector_store_counts))
+
+    st.caption(
+        "この分析はローカル保存された質問ログに基づく簡易集計です。"
+        "確認不可系回答数は、回答文に特定の表現が含まれるかで判定しています。"
+    )
+
+    st.markdown("---")
+
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        render_count_table(
+            "回答スタイルの内訳",
+            answer_style_counts,
+        )
+
+        render_count_table(
+            "検索件数設定の内訳",
+            max_results_counts,
+        )
+
+    with col_right:
+        render_count_table(
+            "検索された根拠候補数の内訳",
+            search_result_count_groups,
+        )
+
+        render_count_table(
+            "使用Vector Storeの内訳",
+            vector_store_counts,
+        )
+
+    with st.expander("分析結果の見方"):
+        st.markdown(
+            """
+            - **保存済み質問数**: ローカルに保存されている質問ログの総数です。
+            - **通常回答数**: 「資料内では確認できません」系ではない回答の件数です。
+            - **確認不可系回答数**: 資料外質問や根拠不足の可能性がある回答の件数です。
+            - **検索された根拠候補数の内訳**: 1回の質問で何件の根拠候補が取得されたかを示します。
+            - **使用Vector Storeの内訳**: どの資料セットが多く使われているかを確認できます。
+            """
+        )
+
+    with st.expander("発表での説明例"):
+        st.markdown(
+            """
+            質問ログを保存・分析することで、利用者がどのような質問をしているかを把握できます。
+            科学館や展示施設で利用する場合、来館者がつまずきやすい内容や、
+            資料に不足している情報を発見する手がかりになります。
+
+            現段階では簡易的な集計ですが、将来的には質問カテゴリの分類、
+            資料外質問の分析、展示改善やFAQ作成への活用に発展させることができます。
+            """
+        )
 
 def render_history_page() -> None:
     """
@@ -333,8 +490,8 @@ def render_history_page() -> None:
     """
     st.header("履歴")
 
-    tab_session, tab_saved = st.tabs(
-        ["このセッションの履歴", "保存済みログ"]
+    tab_session, tab_saved, tab_analysis = st.tabs(
+        ["このセッションの履歴", "保存済みログ", "ログ分析"]
     )
 
     with tab_session:
@@ -343,7 +500,9 @@ def render_history_page() -> None:
     with tab_saved:
         render_saved_logs()
 
-
+    with tab_analysis:
+        render_saved_log_analysis()
+        
 def render_app_overview(
     model: str,
     env_vector_store_id: str,
