@@ -283,6 +283,10 @@ def ask_rag(
     """
     File Searchを使ってVector Store内の資料を検索し、
     その結果に基づいて回答を生成する。
+
+    簡易ガード:
+    - 検索結果が0件の場合は、モデルの回答をそのまま使わず、
+      「資料内では確認できません」という回答に差し替える。
     """
     style_instruction = get_answer_style_instruction(answer_style)
 
@@ -317,5 +321,14 @@ def ask_rag(
 
     answer = response.output_text
     search_results = extract_file_search_results(response)
+
+    if not search_results:
+        guarded_answer = (
+            "資料内では確認できません。"
+            "関連する根拠候補が取得できなかったため、"
+            "登録資料に基づく回答は控えます。"
+        )
+
+        return guarded_answer, search_results
 
     return answer, search_results

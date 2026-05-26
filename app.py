@@ -125,15 +125,37 @@ def create_history_json() -> str:
 def render_search_results(search_results: list[dict[str, str]]) -> None:
     """
     検索された根拠候補を画面に表示する。
+    scoreは厳密な正解確率ではなく、関連度の目安として表示する。
     """
     if not search_results:
         st.info("検索結果の詳細は取得できませんでした。")
         return
 
     for i, result in enumerate(search_results, start=1):
-        with st.expander(f"根拠候補 {i}: {result['filename']}"):
+        filename = result.get("filename", "unknown")
+        score_text = str(result.get("score", "unknown"))
+
+        with st.expander(f"根拠候補 {i}: {filename}"):
             st.write("score")
-            st.code(result["score"])
+            st.code(score_text)
+
+            try:
+                score_value = float(score_text)
+
+                if score_value >= 0.75:
+                    st.success("関連度メモ: 高めの可能性があります。")
+                elif score_value >= 0.5:
+                    st.info("関連度メモ: 中程度の可能性があります。")
+                else:
+                    st.warning("関連度メモ: 低めの可能性があります。")
+            except ValueError:
+                st.caption(
+                    "関連度メモ: scoreの形式が不明なため、関連度ラベルは表示していません。"
+                )
+
+            st.caption(
+                "注: scoreは検索結果の目安であり、回答の正しさを保証する値ではありません。"
+            )
 
             st.write("本文プレビュー")
             preview = result.get("preview", "")
@@ -142,6 +164,7 @@ def render_search_results(search_results: list[dict[str, str]]) -> None:
                 st.write(preview[:1500])
             else:
                 st.info("本文プレビューは取得できませんでした。")
+            
 
 def render_reliability_note(
     answer: str,
@@ -921,7 +944,7 @@ def main():
 
                 st.subheader("検索された根拠候補")
                 render_search_results(search_results)
-                
+
     with tab_history:
         render_history_page()
 
