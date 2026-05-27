@@ -64,6 +64,9 @@ def init_session_state() -> None:
     if "active_vector_store_id" not in st.session_state:
         st.session_state["active_vector_store_id"] = ""
 
+    if "presentation_mode" not in st.session_state:
+        st.session_state["presentation_mode"] = False
+
 
 def ensure_active_vector_store(env_vector_store_id: str) -> None:
     """
@@ -81,6 +84,33 @@ def ensure_active_vector_store(env_vector_store_id: str) -> None:
     )
 
 
+def is_presentation_mode() -> bool:
+    """
+    発表・スクショ用の表示モードかどうかを返す。
+    Trueの場合、Vector Store IDなどをマスク表示する。
+    """
+    return bool(st.session_state.get("presentation_mode", False))
+
+
+def display_sensitive_id(value: str) -> str:
+    """
+    発表モードがONの場合、IDをマスクして表示する。
+    実際の処理では元のIDを使い、画面表示だけを隠す。
+    """
+    if not is_presentation_mode():
+        return value
+
+    if not value:
+        return ""
+
+    if value.startswith("vs_"):
+        return "vs_********"
+
+    if value.startswith("file-") or value.startswith("file_"):
+        return "file_********"
+
+    return "********"
+
 def refresh_registered_files(
     client: OpenAI,
     vector_store_id: str,
@@ -93,6 +123,7 @@ def refresh_registered_files(
         client=client,
         vector_store_id=vector_store_id,
     )
+
     st.session_state["registered_files"] = registered_files
 
 
@@ -256,7 +287,7 @@ def render_history_item(index: int, item: dict[str, Any]) -> None:
         st.markdown("**回答設定**")
         st.write(f"- 検索件数: {max_num_results}")
         st.write(f"- 回答スタイル: {answer_style}")
-        st.write(f"- 使用Vector Store: `{vector_store_id}`")
+        st.write(f"- 使用Vector Store: `{display_sensitive_id(vector_store_id)}`")
 
         st.markdown("**質問**")
         st.write(question_text)
@@ -529,7 +560,10 @@ def render_saved_log_analysis() -> None:
 
         render_count_table(
             "使用Vector Storeの内訳",
-            vector_store_counts,
+            {
+                display_sensitive_id(key): value
+                for key, value in vector_store_counts.items()
+            },
         )
 
     st.markdown("---")
@@ -724,8 +758,8 @@ def render_demo_guide_page() -> None:
         """
         発表時には、以下の順番で説明すると流れが自然です。
 
-        1. 展示施設・教育施設には多様な資料が蓄積されている
-        2. しかし、必要な情報を探したり、利用者の疑問に即時対応したりすることは簡単ではない
+        1. 科学館・展示施設には多様な資料が蓄積されている
+        2. しかし、必要な情報を探したり、来館者の疑問に即時対応したりすることは簡単ではない
         3. 通常のLLMでは、根拠不明な回答や資料外回答の問題がある
         4. そこで、登録資料に基づくRAG型情報支援アプリを試作した
         5. 現在は、資料登録・質問応答・根拠候補表示・資料セット管理・ログ保存まで実装した
@@ -897,11 +931,11 @@ def render_app_overview(
         st.code(model)
 
         st.write(".env の Vector Store ID")
-        st.code(env_vector_store_id)
+        st.code(display_sensitive_id(env_vector_store_id))
 
     with col2:
         st.write("現在使用中の Vector Store ID")
-        st.code(active_vector_store_id)
+        st.code(display_sensitive_id(active_vector_store_id))
 
         if active_vector_store_id != env_vector_store_id:
             st.warning(
@@ -1052,9 +1086,14 @@ def render_vector_store_registry_panel() -> None:
         updated_at = item.get("updated_at", "")
         last_used_at = item.get("last_used_at", "")
 
-        with st.expander(f"{name} / {vector_store_id}"):
+        display_vector_store_id = display_sensitive_id(vector_store_id)
+
+        with st.expander(f"{name} / {display_vector_store_id}"):
             st.write("用途メモ")
             st.write(memo if memo else "メモなし")
+
+            st.write("Vector Store ID")
+            st.code(display_vector_store_id)
 
             st.write("source")
             st.code(source)
@@ -1109,14 +1148,25 @@ def render_sidebar(
     with st.sidebar:
         st.header("設定")
 
+        presentation_mode = st.checkbox(
+            "発表モード（IDをマスク）",
+            value=st.session_state.get("presentation_mode", False),
+            help="スクリーンショットや発表時に、Vector Store IDを一部マスクして表示します。",
+        )
+
+        st.session_state["presentation_mode"] = presentation_mode
+
+        if presentation_mode:
+            st.caption("発表モード中です。画面上のIDはマスク表示されます。")
+
         st.write("使用モデル")
         st.code(model)
 
         st.write(".env の Vector Store ID")
-        st.code(env_vector_store_id)
+        st.code(display_sensitive_id(env_vector_store_id))
 
         st.write("現在使用中の Vector Store ID")
-        st.code(active_vector_store_id)
+        st.code(display_sensitive_id(active_vector_store_id))
 
         if active_vector_store_id != env_vector_store_id:
             st.warning(
@@ -1170,7 +1220,11 @@ def render_sidebar(
                         st.session_state["registered_files"] = []
 
                         st.success("新しいVector Storeを作成し、使用対象に切り替えました。")
-                        st.json(result)
+                        result_for_display = {
+                            **result,
+                            "vector_store_id": display_sensitive_id(new_vector_store_id),
+                        }
+                        st.json(result_for_display)
 
                         st.rerun()
 
@@ -1224,7 +1278,13 @@ def render_sidebar(
 
                         st.success("資料の追加が完了しました。")
                         st.write("追加結果")
-                        st.json(result)
+                        result_for_display = {
+                            **result,
+                            "vector_store_id": display_sensitive_id(
+                                result.get("vector_store_id", "")
+                            ),
+                        }
+                        st.json(result_for_display)
 
                         refresh_registered_files(
                             client=client,
@@ -1268,7 +1328,13 @@ def render_sidebar(
 
                         st.success("テキスト資料の追加が完了しました。")
                         st.write("追加結果")
-                        st.json(result)
+                        result_for_display = {
+                            **result,
+                            "vector_store_id": display_sensitive_id(
+                                result.get("vector_store_id", "")
+                            ),
+                        }
+                        st.json(result_for_display)
 
                         refresh_registered_files(
                             client=client,
@@ -1314,7 +1380,7 @@ def render_sidebar(
                     st.code(status_label)
 
                     st.write("file_id")
-                    st.code(file_id)
+                    st.code(display_sensitive_id(file_id))
 
                     st.warning(
                         "この操作を行うと、この資料は現在のVector Storeの検索対象から外れます。"
@@ -1335,7 +1401,13 @@ def render_sidebar(
                                 )
 
                                 st.success("資料を検索対象から外しました。")
-                                st.json(delete_result)
+                                delete_result_for_display = {
+                                    **delete_result,
+                                    "file_id": display_sensitive_id(
+                                        delete_result.get("file_id", "")
+                                    ),
+                                }
+                                st.json(delete_result_for_display)
 
                                 refresh_registered_files(
                                     client=client,
@@ -1394,6 +1466,27 @@ def main():
 
     with tab_question:
         st.subheader("質問")
+
+        st.markdown("### 現在の質問設定")
+
+        col_vs, col_results, col_style = st.columns(3)
+
+        with col_vs:
+            st.caption("使用中のVector Store")
+            st.code(display_sensitive_id(active_vector_store_id))
+
+        with col_results:
+            st.caption("検索件数")
+            st.code(str(max_num_results))
+
+        with col_style:
+            st.caption("回答スタイル")
+            st.code(answer_style)
+
+        if is_presentation_mode():
+            st.info(
+                "発表モード中です。画面上のVector Store IDやFile IDはマスク表示されています。"
+            )
 
         demo_questions = {
             "1. システムの目的": "このシステムの目的は何ですか？",
