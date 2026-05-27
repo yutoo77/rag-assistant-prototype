@@ -164,7 +164,7 @@ def render_search_results(search_results: list[dict[str, str]]) -> None:
                 st.write(preview[:1500])
             else:
                 st.info("本文プレビューは取得できませんでした。")
-            
+
 
 def render_reliability_note(
     answer: str,
@@ -219,6 +219,7 @@ def render_reliability_note(
             f"補足: {missing_preview_count} 件の根拠候補では本文プレビューを取得できませんでした。"
             "APIの返却形式によって、本文断片が表示できない場合があります。"
         )
+
 
 def render_history_item(index: int, item: dict[str, Any]) -> None:
     """
@@ -326,163 +327,6 @@ def render_saved_logs() -> None:
     for i, item in enumerate(saved_logs, start=1):
         render_history_item(i, item)
 
-def is_no_answer_like(answer: str) -> bool:
-    """
-    回答が「資料内では確認できません」系かどうかを簡易判定する。
-    厳密な分類ではなく、ログ分析用の補助判定。
-    """
-    no_answer_phrases = [
-        "資料内では確認できません",
-        "資料内で確認できません",
-        "確認できません",
-        "記載されていません",
-        "情報はありません",
-    ]
-
-    return any(phrase in answer for phrase in no_answer_phrases)
-
-
-def count_by_key(items: list[dict[str, Any]], key_func) -> dict[str, int]:
-    """
-    任意のキーごとに件数を集計する補助関数。
-    """
-    counts: dict[str, int] = {}
-
-    for item in items:
-        key = str(key_func(item))
-        counts[key] = counts.get(key, 0) + 1
-
-    return counts
-
-
-def render_count_table(title: str, counts: dict[str, int]) -> None:
-    """
-    集計結果を表形式で表示する。
-    """
-    st.markdown(f"**{title}**")
-
-    if not counts:
-        st.info("集計対象がありません。")
-        return
-
-    rows = [
-        {"項目": key, "件数": value}
-        for key, value in sorted(
-            counts.items(),
-            key=lambda x: x[1],
-            reverse=True,
-        )
-    ]
-
-    st.table(rows)
-
-
-def render_saved_log_analysis() -> None:
-    """
-    ローカル保存済み質問ログの簡易分析を表示する。
-    """
-    st.header("質問ログ分析")
-
-    saved_logs = load_qa_logs(limit=0)
-
-    if not saved_logs:
-        st.info("分析対象の保存済みログはまだありません。")
-        return
-
-    total_count = len(saved_logs)
-
-    no_answer_count = sum(
-        1 for item in saved_logs if is_no_answer_like(item.get("answer", ""))
-    )
-    normal_answer_count = total_count - no_answer_count
-
-    vector_store_counts = count_by_key(
-        saved_logs,
-        lambda item: item.get("settings", {}).get("vector_store_id", "unknown"),
-    )
-
-    answer_style_counts = count_by_key(
-        saved_logs,
-        lambda item: item.get("settings", {}).get("answer_style", "unknown"),
-    )
-
-    max_results_counts = count_by_key(
-        saved_logs,
-        lambda item: item.get("settings", {}).get("max_num_results", "unknown"),
-    )
-
-    search_result_count_groups = count_by_key(
-        saved_logs,
-        lambda item: len(item.get("search_results", [])),
-    )
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        st.metric("保存済み質問数", total_count)
-
-    with col2:
-        st.metric("通常回答数", normal_answer_count)
-
-    with col3:
-        st.metric("確認不可系回答数", no_answer_count)
-
-    with col4:
-        st.metric("使用Vector Store数", len(vector_store_counts))
-
-    st.caption(
-        "この分析はローカル保存された質問ログに基づく簡易集計です。"
-        "確認不可系回答数は、回答文に特定の表現が含まれるかで判定しています。"
-    )
-
-    st.markdown("---")
-
-    col_left, col_right = st.columns(2)
-
-    with col_left:
-        render_count_table(
-            "回答スタイルの内訳",
-            answer_style_counts,
-        )
-
-        render_count_table(
-            "検索件数設定の内訳",
-            max_results_counts,
-        )
-
-    with col_right:
-        render_count_table(
-            "検索された根拠候補数の内訳",
-            search_result_count_groups,
-        )
-
-        render_count_table(
-            "使用Vector Storeの内訳",
-            vector_store_counts,
-        )
-
-    with st.expander("分析結果の見方"):
-        st.markdown(
-            """
-            - **保存済み質問数**: ローカルに保存されている質問ログの総数です。
-            - **通常回答数**: 「資料内では確認できません」系ではない回答の件数です。
-            - **確認不可系回答数**: 資料外質問や根拠不足の可能性がある回答の件数です。
-            - **検索された根拠候補数の内訳**: 1回の質問で何件の根拠候補が取得されたかを示します。
-            - **使用Vector Storeの内訳**: どの資料セットが多く使われているかを確認できます。
-            """
-        )
-
-    with st.expander("発表での説明例"):
-        st.markdown(
-            """
-            質問ログを保存・分析することで、利用者がどのような質問をしているかを把握できます。
-            科学館や展示施設で利用する場合、来館者がつまずきやすい内容や、
-            資料に不足している情報を発見する手がかりになります。
-
-            現段階では簡易的な集計ですが、将来的には質問カテゴリの分類、
-            資料外質問の分析、展示改善やFAQ作成への活用に発展させることができます。
-            """
-        )
 
 def render_history_page() -> None:
     """
@@ -490,8 +334,8 @@ def render_history_page() -> None:
     """
     st.header("履歴")
 
-    tab_session, tab_saved, tab_analysis = st.tabs(
-        ["このセッションの履歴", "保存済みログ", "ログ分析"]
+    tab_session, tab_saved = st.tabs(
+        ["このセッションの履歴", "保存済みログ"]
     )
 
     with tab_session:
@@ -500,8 +344,6 @@ def render_history_page() -> None:
     with tab_saved:
         render_saved_logs()
 
-    with tab_analysis:
-        render_saved_log_analysis()
 
 def render_app_overview(
     model: str,
@@ -530,6 +372,7 @@ def render_app_overview(
         - 不要な資料を検索対象から外せる
         - 登録資料に基づいて質問応答できる
         - 回答の根拠候補を表示できる
+        - 回答信頼性メモを表示できる
         - 質問・回答ログをローカルに自動保存できる
         - 検索件数と回答スタイルを調整できる
         - Vector Storeを新規作成して、資料セットを切り替えられる
@@ -566,7 +409,7 @@ def render_app_overview(
         """
         - 現在のVector StoreはOpenAI側に作成されるため、科学館実用版ではローカル化・閉域化が重要になる
         - スキャンPDFや画像PDFは、そのままだと検索対象としてうまく扱えない場合がある
-        - 「資料内では確認できません」という判定は、現段階では主にプロンプト制御に依存している
+        - 「資料内では確認できません」という判定は、現段階では主にプロンプト制御と検索結果0件時の簡易ガードに依存している
         - 本文プレビューはAPIの返却形式によって取得できない場合がある
         - 質問ログには質問内容・回答内容が残るため、実運用時には個人情報やログ管理方針が必要になる
         """
@@ -585,141 +428,6 @@ def render_app_overview(
         - 音声入力・音声読み上げ
         - デモ用資料セットの整備
         - READMEと発表スライドの整備
-        """
-    )
-
-def render_demo_guide_page() -> None:
-    """
-    ゼミ発表やデモ確認用の手順を表示する。
-    アプリの操作手順と、発表時に説明するポイントをまとめる。
-    """
-    st.header("デモ手順")
-
-    st.markdown(
-        """
-        このタブでは、ゼミ発表や動作確認で使うデモの流れを確認できます。
-        本プロトタイプは、閉じた資料セットに基づいて質問応答を行う
-        RAG型情報支援アプリの初期試作です。
-        """
-    )
-
-    st.subheader("1. 事前準備")
-
-    st.markdown(
-        """
-        - サイドバーで、使用中のVector Storeを確認する
-        - 発表用・検証用の資料セットを使用していることを確認する
-        - 登録済み資料一覧を更新し、想定した資料が入っているか確認する
-        - 回答設定で、検索件数と回答スタイルを確認する
-        """
-    )
-
-    st.info(
-        "発表時は、開発用の資料セットではなく、デモ用に整理したVector Storeを使うと安全です。"
-    )
-
-    st.subheader("2. 資料内質問のデモ")
-
-    st.markdown(
-        """
-        まず、登録資料内に根拠がある質問を行います。
-        ここでは、RAGによって資料に基づく回答が生成されることを確認します。
-        """
-    )
-
-    st.markdown("**例:**")
-
-    st.code("このシステムの目的は何ですか？")
-    st.code("なぜRAGを使うのですか？")
-    st.code("春と冬の代表的な星座を教えてください。")
-    st.code("スキャンPDFを扱うときの課題は何ですか？")
-
-    st.markdown(
-        """
-        確認するポイント:
-        - 回答が登録資料の内容に沿っているか
-        - 根拠候補が表示されているか
-        - scoreや関連度メモが確認できるか
-        - 回答信頼性メモが表示されているか
-        """
-    )
-
-    st.subheader("3. 資料外質問のデモ")
-
-    st.markdown(
-        """
-        次に、登録資料に直接書かれていない質問を行います。
-        このデモでは、資料外の内容に対して推測回答を抑制できるかを確認します。
-        """
-    )
-
-    st.markdown("**例:**")
-
-    st.code("この展示の入場料はいくらですか？")
-    st.code("科学館の開館時間を教えてください。")
-
-    st.markdown(
-        """
-        期待される挙動:
-        - 資料に情報がない場合、「資料内では確認できません」と返る
-        - 関連する根拠候補がない場合、簡易ガードによって回答を控える
-        - 回答信頼性メモで、根拠候補の有無を確認できる
-        """
-    )
-
-    st.warning(
-        "現段階の資料外回答抑制は、プロンプト制御と検索結果0件時の簡易ガードに基づくものです。"
-        "厳密な回答可能性判定は今後の課題です。"
-    )
-
-    st.subheader("4. 履歴・ログ分析の確認")
-
-    st.markdown(
-        """
-        履歴タブでは、質問・回答履歴とローカル保存済みログを確認できます。
-        また、ログ分析では、保存済み質問数、確認不可系回答数、回答スタイルの内訳、
-        使用Vector Storeの内訳などを確認できます。
-        """
-    )
-
-    st.markdown(
-        """
-        発表で説明できるポイント:
-        - 質問ログを蓄積することで、利用者の関心やつまずきやすい内容を分析できる
-        - 展示改善やFAQ作成に活用できる可能性がある
-        - 現段階では単純集計だが、将来的にはEmbeddingによる類似質問のグルーピングに発展できる
-        """
-    )
-
-    st.subheader("5. 発表での説明ポイント")
-
-    st.markdown(
-        """
-        発表時には、以下の順番で説明すると流れが自然です。
-        """
-    )
-
-    st.markdown(
-        """
-        1. 科学館・展示施設には多様な資料が蓄積されている
-        2. しかし、必要な情報を探したり、来館者の疑問に即時対応したりすることは簡単ではない
-        3. 通常のLLMでは、根拠不明な回答や資料外回答の問題がある
-        4. そこで、登録資料に基づくRAG型情報支援アプリを試作した
-        5. 現在は、資料登録・質問応答・根拠候補表示・資料セット管理・ログ保存まで実装した
-        6. 今後は、OCR、回答可能性判定、ローカルVector DB、ローカルLLMによる閉域構成へ発展させたい
-        """
-    )
-
-    st.subheader("6. 今後の展望")
-
-    st.markdown(
-        """
-        - スキャンPDFや画像PDFに対応するためのOCR前処理
-        - 検索スコアや根拠文との一致度を用いた回答可能性判定
-        - 質問ログをEmbeddingでベクトル化し、類似質問をグルーピングする分析
-        - ローカルVector DBによる資料管理
-        - ローカルLLMによる閉域構成
-        - 音声入力・音声読み上げによる対話体験の拡張
         """
     )
 
@@ -1151,8 +859,8 @@ def main():
         active_vector_store_id=active_vector_store_id,
     )
 
-    tab_question, tab_history, tab_vector_stores, tab_demo_guide, tab_overview = st.tabs(
-        ["質問", "履歴", "Vector Store管理", "デモ手順", "アプリ概要"]
+    tab_question, tab_history, tab_vector_stores, tab_overview = st.tabs(
+        ["質問", "履歴", "Vector Store管理", "アプリ概要"]
     )
 
     with tab_question:
@@ -1245,15 +953,13 @@ def main():
     with tab_vector_stores:
         render_vector_store_registry_panel()
 
-    with tab_demo_guide:
-        render_demo_guide_page()
-
     with tab_overview:
         render_app_overview(
             model=model,
             env_vector_store_id=env_vector_store_id,
             active_vector_store_id=active_vector_store_id,
         )
+
 
 if __name__ == "__main__":
     main()
