@@ -81,6 +81,21 @@ def ensure_active_vector_store(env_vector_store_id: str) -> None:
     )
 
 
+def refresh_registered_files(
+    client: OpenAI,
+    vector_store_id: str,
+) -> None:
+    """
+    現在のVector Storeに登録されている資料一覧を取得し、
+    session_stateに保存する。
+    """
+    registered_files = list_vector_store_files(
+        client=client,
+        vector_store_id=vector_store_id,
+    )
+    st.session_state["registered_files"] = registered_files
+
+
 def add_qa_history(
     question: str,
     answer: str,
@@ -328,14 +343,261 @@ def render_saved_logs() -> None:
         render_history_item(i, item)
 
 
+def is_no_answer_like(answer: str) -> bool:
+    """
+    回答が「資料内では確認できません」系かどうかを簡易判定する。
+    厳密な分類ではなく、ログ分析用の補助判定。
+    """
+    no_answer_phrases = [
+        "資料内では確認できません",
+        "資料内で確認できません",
+        "確認できません",
+        "記載されていません",
+        "情報はありません",
+    ]
+
+    return any(phrase in answer for phrase in no_answer_phrases)
+
+
+def count_by_key(items: list[dict[str, Any]], key_func) -> dict[str, int]:
+    """
+    任意のキーごとに件数を集計する補助関数。
+    """
+    counts: dict[str, int] = {}
+
+    for item in items:
+        key = str(key_func(item))
+        counts[key] = counts.get(key, 0) + 1
+
+    return counts
+
+
+def render_count_table(title: str, counts: dict[str, int]) -> None:
+    """
+    集計結果を表形式で表示する。
+    """
+    st.markdown(f"**{title}**")
+
+    if not counts:
+        st.info("集計対象がありません。")
+        return
+
+    rows = [
+        {"項目": key, "件数": value}
+        for key, value in sorted(
+            counts.items(),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+    ]
+
+    st.table(rows)
+
+
+def render_saved_log_analysis() -> None:
+    """
+    ローカル保存済み質問ログの簡易分析を表示する。
+    発表で説明しやすいように、件数・比率・根拠候補数などを整理する。
+    """
+    st.header("質問ログ分析")
+
+    saved_logs = load_qa_logs(limit=0)
+
+    if not saved_logs:
+        st.info("分析対象の保存済みログはまだありません。")
+        return
+
+    total_count = len(saved_logs)
+
+    no_answer_count = sum(
+        1 for item in saved_logs if is_no_answer_like(item.get("answer", ""))
+    )
+    normal_answer_count = total_count - no_answer_count
+
+    no_answer_rate = no_answer_count / total_count if total_count > 0 else 0.0
+    normal_answer_rate = normal_answer_count / total_count if total_count > 0 else 0.0
+
+    search_result_counts = [
+        len(item.get("search_results", []))
+        for item in saved_logs
+    ]
+
+    zero_search_result_count = sum(
+        1 for count in search_result_counts if count == 0
+    )
+
+    average_search_results = (
+        sum(search_result_counts) / total_count if total_count > 0 else 0.0
+    )
+
+    vector_store_counts = count_by_key(
+        saved_logs,
+        lambda item: item.get("settings", {}).get("vector_store_id", "unknown"),
+    )
+
+    answer_style_counts = count_by_key(
+        saved_logs,
+        lambda item: item.get("settings", {}).get("answer_style", "unknown"),
+    )
+
+    max_results_counts = count_by_key(
+        saved_logs,
+        lambda item: item.get("settings", {}).get("max_num_results", "unknown"),
+    )
+
+    search_result_count_groups = count_by_key(
+        saved_logs,
+        lambda item: len(item.get("search_results", [])),
+    )
+
+    timestamps = [
+        item.get("timestamp", "")
+        for item in saved_logs
+        if item.get("timestamp")
+    ]
+
+    latest_timestamp = max(timestamps) if timestamps else "unknown"
+
+    st.markdown(
+        """
+        保存済みの質問・回答ログをもとに、利用状況を簡易的に集計します。
+        現段階では厳密な意味解析ではなく、件数・回答状態・根拠候補数などの基本的な集計です。
+        """
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("保存済み質問数", total_count)
+
+    with col2:
+        st.metric("通常回答数", normal_answer_count)
+
+    with col3:
+        st.metric("確認不可系回答数", no_answer_count)
+
+    with col4:
+        st.metric("使用Vector Store数", len(vector_store_counts))
+
+    col5, col6, col7 = st.columns(3)
+
+    with col5:
+        st.metric("通常回答率", f"{normal_answer_rate:.1%}")
+
+    with col6:
+        st.metric("確認不可系回答率", f"{no_answer_rate:.1%}")
+
+    with col7:
+        st.metric("平均根拠候補数", f"{average_search_results:.2f}")
+
+    st.caption(f"最新ログ日時: {latest_timestamp}")
+
+    if zero_search_result_count > 0:
+        st.warning(
+            f"根拠候補が0件だった質問が {zero_search_result_count} 件あります。"
+            "資料外質問、資料不足、検索失敗などの可能性があります。"
+        )
+    else:
+        st.success(
+            "すべての保存済み質問で、少なくとも1件以上の根拠候補が取得されています。"
+        )
+
+    st.caption(
+        "確認不可系回答数は、回答文に「資料内では確認できません」などの表現が含まれるかで簡易判定しています。"
+    )
+
+    st.markdown("---")
+
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        render_count_table(
+            "回答スタイルの内訳",
+            answer_style_counts,
+        )
+
+        render_count_table(
+            "検索件数設定の内訳",
+            max_results_counts,
+        )
+
+    with col_right:
+        render_count_table(
+            "検索された根拠候補数の内訳",
+            search_result_count_groups,
+        )
+
+        render_count_table(
+            "使用Vector Storeの内訳",
+            vector_store_counts,
+        )
+
+    st.markdown("---")
+
+    st.subheader("簡易的な読み取り")
+
+    if no_answer_count == 0:
+        st.info(
+            "現時点のログでは、確認不可系の回答は記録されていません。"
+            "資料内質問が中心だった可能性があります。"
+        )
+    elif no_answer_rate >= 0.5:
+        st.warning(
+            "確認不可系回答の割合が高めです。"
+            "資料外質問が多い、または登録資料に不足がある可能性があります。"
+        )
+    else:
+        st.info(
+            "確認不可系回答も一部含まれています。"
+            "資料外質問への応答や、資料不足の確認に利用できます。"
+        )
+
+    if average_search_results < 1:
+        st.warning(
+            "平均根拠候補数が少なめです。"
+            "資料登録状況や検索対象のVector Storeを確認するとよい可能性があります。"
+        )
+    else:
+        st.info(
+            "平均根拠候補数から、質問に対して一定数の検索結果が取得されていることを確認できます。"
+        )
+
+    with st.expander("分析結果の見方"):
+        st.markdown(
+            """
+            - **保存済み質問数**: ローカルに保存されている質問ログの総数です。
+            - **通常回答数**: 「資料内では確認できません」系ではない回答の件数です。
+            - **確認不可系回答数**: 資料外質問や根拠不足の可能性がある回答の件数です。
+            - **通常回答率 / 確認不可系回答率**: 保存済みログ全体に対する割合です。
+            - **平均根拠候補数**: 1回の質問に対して平均何件の根拠候補が取得されたかを示します。
+            - **検索された根拠候補数の内訳**: 根拠候補が0件・1件・複数件だった質問の分布を確認できます。
+            - **使用Vector Storeの内訳**: どの資料セットが多く使われているかを確認できます。
+            """
+        )
+
+    with st.expander("発表での説明例"):
+        st.markdown(
+            """
+            質問ログを保存・分析することで、利用者がどのような質問をしているかを把握できます。
+            科学館や展示施設で利用する場合、来館者がつまずきやすい内容や、
+            資料に不足している情報を発見する手がかりになります。
+
+            現段階では件数や回答状態を中心とした簡易集計ですが、
+            将来的には質問文をEmbeddingでベクトル化し、
+            意味的に近い質問をグルーピングすることで、
+            来館者の関心や展示説明の不足箇所をより詳しく分析できる可能性があります。
+            """
+        )
+
+
 def render_history_page() -> None:
     """
     履歴タブ全体を表示する。
     """
     st.header("履歴")
 
-    tab_session, tab_saved = st.tabs(
-        ["このセッションの履歴", "保存済みログ"]
+    tab_session, tab_saved, tab_analysis = st.tabs(
+        ["このセッションの履歴", "保存済みログ", "ログ分析"]
     )
 
     with tab_session:
@@ -343,6 +605,146 @@ def render_history_page() -> None:
 
     with tab_saved:
         render_saved_logs()
+
+    with tab_analysis:
+        render_saved_log_analysis()
+
+
+def render_demo_guide_page() -> None:
+    """
+    ゼミ発表やデモ確認用の手順を表示する。
+    アプリの操作手順と、発表時に説明するポイントをまとめる。
+    """
+    st.header("デモ手順")
+
+    st.markdown(
+        """
+        このタブでは、ゼミ発表や動作確認で使うデモの流れを確認できます。
+
+        本プロトタイプは、閉じた資料セットに基づいて質問応答を行う
+        RAG型情報支援アプリの初期試作です。
+        """
+    )
+
+    st.subheader("1. 事前準備")
+
+    st.markdown(
+        """
+        - サイドバーで、使用中のVector Storeを確認する
+        - 発表用・検証用の資料セットを使用していることを確認する
+        - 登録済み資料一覧を更新し、想定した資料が入っているか確認する
+        - 回答設定で、検索件数と回答スタイルを確認する
+        """
+    )
+
+    st.info(
+        "発表時は、開発用の資料セットではなく、デモ用に整理したVector Storeを使うと安全です。"
+    )
+
+    st.subheader("2. 資料内質問のデモ")
+
+    st.markdown(
+        """
+        まず、登録資料内に根拠がある質問を行います。
+        ここでは、RAGによって資料に基づく回答が生成されることを確認します。
+        """
+    )
+
+    st.markdown("**例:**")
+
+    st.code("このシステムの目的は何ですか？")
+    st.code("なぜRAGを使うのですか？")
+    st.code("春と冬の代表的な星座を教えてください。")
+    st.code("スキャンPDFを扱うときの課題は何ですか？")
+
+    st.markdown(
+        """
+        確認するポイント:
+
+        - 回答が登録資料の内容に沿っているか
+        - 根拠候補が表示されているか
+        - scoreや関連度メモが確認できるか
+        - 回答信頼性メモが表示されているか
+        """
+    )
+
+    st.subheader("3. 資料外質問のデモ")
+
+    st.markdown(
+        """
+        次に、登録資料に直接書かれていない質問を行います。
+        このデモでは、資料外の内容に対して推測回答を抑制できるかを確認します。
+        """
+    )
+
+    st.markdown("**例:**")
+
+    st.code("この展示の入場料はいくらですか？")
+    st.code("科学館の開館時間を教えてください。")
+
+    st.markdown(
+        """
+        期待される挙動:
+
+        - 資料に情報がない場合、「資料内では確認できません」と返る
+        - 関連する根拠候補がない場合、簡易ガードによって回答を控える
+        - 回答信頼性メモで、根拠候補の有無を確認できる
+        """
+    )
+
+    st.warning(
+        "現段階の資料外回答抑制は、プロンプト制御と検索結果0件時の簡易ガードに基づくものです。"
+        "厳密な回答可能性判定は今後の課題です。"
+    )
+
+    st.subheader("4. 履歴・ログ分析の確認")
+
+    st.markdown(
+        """
+        履歴タブでは、質問・回答履歴とローカル保存済みログを確認できます。
+
+        ログ分析では、保存済み質問数、確認不可系回答数、回答スタイルの内訳、
+        使用Vector Storeの内訳などを確認できます。
+        """
+    )
+
+    st.markdown(
+        """
+        発表で説明できるポイント:
+
+        - 質問ログを蓄積することで、利用者の関心やつまずきやすい内容を分析できる
+        - 展示改善やFAQ作成に活用できる可能性がある
+        - 現段階では単純集計だが、将来的にはEmbeddingによる類似質問のグルーピングに発展できる
+        """
+    )
+
+    st.subheader("5. 発表での説明の流れ")
+
+    st.markdown(
+        """
+        発表時には、以下の順番で説明すると流れが自然です。
+
+        1. 展示施設・教育施設には多様な資料が蓄積されている
+        2. しかし、必要な情報を探したり、利用者の疑問に即時対応したりすることは簡単ではない
+        3. 通常のLLMでは、根拠不明な回答や資料外回答の問題がある
+        4. そこで、登録資料に基づくRAG型情報支援アプリを試作した
+        5. 現在は、資料登録・質問応答・根拠候補表示・資料セット管理・ログ保存まで実装した
+        6. 今後は、OCR、回答可能性判定、ローカルVector DB、ローカルLLMによる閉域構成へ発展させたい
+        """
+    )
+
+    st.subheader("6. 今後の展望")
+
+    st.markdown(
+        """
+        - スキャンPDFや画像PDFに対応するためのOCR前処理
+        - 検索スコアや根拠文との一致度を用いた回答可能性判定
+        - 質問ログをEmbeddingでベクトル化し、類似質問をグルーピングする分析
+        - ローカルVector DBによる資料管理
+        - ローカルLLMによる閉域構成
+        - 音声入力・音声読み上げによる対話体験の拡張
+        """
+    )
 
 
 def render_app_overview(
@@ -549,6 +951,7 @@ def render_app_overview(
         "本プロトタイプでは、まずOpenAI版でRAGアプリの体験・機能要件・課題を確認し、"
         "その後、より実用的な閉域RAG構成へ発展させることを目指しています。"
     )
+
 
 def render_vector_store_registry_panel() -> None:
     """
@@ -823,7 +1226,10 @@ def render_sidebar(
                         st.write("追加結果")
                         st.json(result)
 
-                        st.session_state["registered_files"] = []
+                        refresh_registered_files(
+                            client=client,
+                            vector_store_id=active_vector_store_id,
+                        )
 
                     except Exception as e:
                         st.error("資料の追加中にエラーが発生しました。")
@@ -864,7 +1270,10 @@ def render_sidebar(
                         st.write("追加結果")
                         st.json(result)
 
-                        st.session_state["registered_files"] = []
+                        refresh_registered_files(
+                            client=client,
+                            vector_store_id=active_vector_store_id,
+                        )
 
                     except Exception as e:
                         st.error("テキスト資料の追加中にエラーが発生しました。")
@@ -876,12 +1285,10 @@ def render_sidebar(
         if st.button("登録済み資料一覧を更新"):
             with st.spinner("登録済み資料を取得しています..."):
                 try:
-                    registered_files = list_vector_store_files(
+                    refresh_registered_files(
                         client=client,
                         vector_store_id=active_vector_store_id,
                     )
-
-                    st.session_state["registered_files"] = registered_files
 
                 except Exception as e:
                     st.error("登録済み資料の取得中にエラーが発生しました。")
@@ -930,7 +1337,11 @@ def render_sidebar(
                                 st.success("資料を検索対象から外しました。")
                                 st.json(delete_result)
 
-                                st.session_state["registered_files"] = []
+                                refresh_registered_files(
+                                    client=client,
+                                    vector_store_id=active_vector_store_id,
+                                )
+
                                 st.rerun()
 
                             except Exception as e:
@@ -977,8 +1388,8 @@ def main():
         active_vector_store_id=active_vector_store_id,
     )
 
-    tab_question, tab_history, tab_vector_stores, tab_overview = st.tabs(
-        ["質問", "履歴", "Vector Store管理", "アプリ概要"]
+    tab_question, tab_history, tab_vector_stores, tab_demo_guide, tab_overview = st.tabs(
+        ["質問", "履歴", "Vector Store管理", "デモ手順", "アプリ概要"]
     )
 
     with tab_question:
@@ -1070,6 +1481,9 @@ def main():
 
     with tab_vector_stores:
         render_vector_store_registry_panel()
+
+    with tab_demo_guide:
+        render_demo_guide_page()
 
     with tab_overview:
         render_app_overview(
