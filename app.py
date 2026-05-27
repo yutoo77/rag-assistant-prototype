@@ -502,7 +502,7 @@ def render_history_page() -> None:
 
     with tab_analysis:
         render_saved_log_analysis()
-        
+
 def render_app_overview(
     model: str,
     env_vector_store_id: str,
@@ -585,6 +585,141 @@ def render_app_overview(
         - 音声入力・音声読み上げ
         - デモ用資料セットの整備
         - READMEと発表スライドの整備
+        """
+    )
+
+def render_demo_guide_page() -> None:
+    """
+    ゼミ発表やデモ確認用の手順を表示する。
+    アプリの操作手順と、発表時に説明するポイントをまとめる。
+    """
+    st.header("デモ手順")
+
+    st.markdown(
+        """
+        このタブでは、ゼミ発表や動作確認で使うデモの流れを確認できます。
+        本プロトタイプは、閉じた資料セットに基づいて質問応答を行う
+        RAG型情報支援アプリの初期試作です。
+        """
+    )
+
+    st.subheader("1. 事前準備")
+
+    st.markdown(
+        """
+        - サイドバーで、使用中のVector Storeを確認する
+        - 発表用・検証用の資料セットを使用していることを確認する
+        - 登録済み資料一覧を更新し、想定した資料が入っているか確認する
+        - 回答設定で、検索件数と回答スタイルを確認する
+        """
+    )
+
+    st.info(
+        "発表時は、開発用の資料セットではなく、デモ用に整理したVector Storeを使うと安全です。"
+    )
+
+    st.subheader("2. 資料内質問のデモ")
+
+    st.markdown(
+        """
+        まず、登録資料内に根拠がある質問を行います。
+        ここでは、RAGによって資料に基づく回答が生成されることを確認します。
+        """
+    )
+
+    st.markdown("**例:**")
+
+    st.code("このシステムの目的は何ですか？")
+    st.code("なぜRAGを使うのですか？")
+    st.code("春と冬の代表的な星座を教えてください。")
+    st.code("スキャンPDFを扱うときの課題は何ですか？")
+
+    st.markdown(
+        """
+        確認するポイント:
+        - 回答が登録資料の内容に沿っているか
+        - 根拠候補が表示されているか
+        - scoreや関連度メモが確認できるか
+        - 回答信頼性メモが表示されているか
+        """
+    )
+
+    st.subheader("3. 資料外質問のデモ")
+
+    st.markdown(
+        """
+        次に、登録資料に直接書かれていない質問を行います。
+        このデモでは、資料外の内容に対して推測回答を抑制できるかを確認します。
+        """
+    )
+
+    st.markdown("**例:**")
+
+    st.code("この展示の入場料はいくらですか？")
+    st.code("科学館の開館時間を教えてください。")
+
+    st.markdown(
+        """
+        期待される挙動:
+        - 資料に情報がない場合、「資料内では確認できません」と返る
+        - 関連する根拠候補がない場合、簡易ガードによって回答を控える
+        - 回答信頼性メモで、根拠候補の有無を確認できる
+        """
+    )
+
+    st.warning(
+        "現段階の資料外回答抑制は、プロンプト制御と検索結果0件時の簡易ガードに基づくものです。"
+        "厳密な回答可能性判定は今後の課題です。"
+    )
+
+    st.subheader("4. 履歴・ログ分析の確認")
+
+    st.markdown(
+        """
+        履歴タブでは、質問・回答履歴とローカル保存済みログを確認できます。
+        また、ログ分析では、保存済み質問数、確認不可系回答数、回答スタイルの内訳、
+        使用Vector Storeの内訳などを確認できます。
+        """
+    )
+
+    st.markdown(
+        """
+        発表で説明できるポイント:
+        - 質問ログを蓄積することで、利用者の関心やつまずきやすい内容を分析できる
+        - 展示改善やFAQ作成に活用できる可能性がある
+        - 現段階では単純集計だが、将来的にはEmbeddingによる類似質問のグルーピングに発展できる
+        """
+    )
+
+    st.subheader("5. 発表での説明ポイント")
+
+    st.markdown(
+        """
+        発表時には、以下の順番で説明すると流れが自然です。
+        """
+    )
+
+    st.markdown(
+        """
+        1. 科学館・展示施設には多様な資料が蓄積されている
+        2. しかし、必要な情報を探したり、来館者の疑問に即時対応したりすることは簡単ではない
+        3. 通常のLLMでは、根拠不明な回答や資料外回答の問題がある
+        4. そこで、登録資料に基づくRAG型情報支援アプリを試作した
+        5. 現在は、資料登録・質問応答・根拠候補表示・資料セット管理・ログ保存まで実装した
+        6. 今後は、OCR、回答可能性判定、ローカルVector DB、ローカルLLMによる閉域構成へ発展させたい
+        """
+    )
+
+    st.subheader("6. 今後の展望")
+
+    st.markdown(
+        """
+        - スキャンPDFや画像PDFに対応するためのOCR前処理
+        - 検索スコアや根拠文との一致度を用いた回答可能性判定
+        - 質問ログをEmbeddingでベクトル化し、類似質問をグルーピングする分析
+        - ローカルVector DBによる資料管理
+        - ローカルLLMによる閉域構成
+        - 音声入力・音声読み上げによる対話体験の拡張
         """
     )
 
@@ -1016,8 +1151,8 @@ def main():
         active_vector_store_id=active_vector_store_id,
     )
 
-    tab_question, tab_history, tab_vector_stores, tab_overview = st.tabs(
-        ["質問", "履歴", "Vector Store管理", "アプリ概要"]
+    tab_question, tab_history, tab_vector_stores, tab_demo_guide, tab_overview = st.tabs(
+        ["質問", "履歴", "Vector Store管理", "デモ手順", "アプリ概要"]
     )
 
     with tab_question:
@@ -1110,13 +1245,15 @@ def main():
     with tab_vector_stores:
         render_vector_store_registry_panel()
 
+    with tab_demo_guide:
+        render_demo_guide_page()
+
     with tab_overview:
         render_app_overview(
             model=model,
             env_vector_store_id=env_vector_store_id,
             active_vector_store_id=active_vector_store_id,
         )
-
 
 if __name__ == "__main__":
     main()
