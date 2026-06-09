@@ -11,6 +11,7 @@ from rag_client import (
     create_vector_store,
     is_valid_vector_store_id,
     list_vector_store_files,
+    list_vector_stores,
     remove_file_from_vector_store,
     upload_file_to_vector_store,
     upload_text_to_vector_store,
@@ -67,6 +68,9 @@ def init_session_state() -> None:
     if "presentation_mode" not in st.session_state:
         st.session_state["presentation_mode"] = False
 
+    if "openai_vector_stores" not in st.session_state:
+        st.session_state["openai_vector_stores"] = []
+
 
 def ensure_active_vector_store(env_vector_store_id: str) -> None:
     """
@@ -94,7 +98,7 @@ def is_presentation_mode() -> bool:
 
 def display_sensitive_id(value: str) -> str:
     """
-    発表モードがONの場合、IDをマスクして表示する。
+    発表モードがONの場合、IDを完全マスクして表示する。
     実際の処理では元のIDを使い、画面表示だけを隠す。
     """
     if not is_presentation_mode():
@@ -110,6 +114,7 @@ def display_sensitive_id(value: str) -> str:
         return "file_********"
 
     return "********"
+
 
 def refresh_registered_files(
     client: OpenAI,
@@ -987,9 +992,11 @@ def render_app_overview(
     )
 
 
-def render_vector_store_registry_panel() -> None:
+def render_vector_store_registry_panel(client: OpenAI) -> None:
     """
     ローカル保存されたVector Store管理情報を表示し、切り替えできるようにする。
+    さらに、OpenAI上に存在するVector Store一覧を取得し、
+    学校PCなどの新しい環境でもローカル台帳へ復元できるようにする。
     """
     st.header("Vector Store管理")
 
@@ -1000,7 +1007,117 @@ def render_vector_store_registry_panel() -> None:
         """
     )
 
-    st.subheader("既存Vector Store IDを登録")
+    st.subheader("OpenAI上のVector Storeから復元")
+
+    st.markdown(
+        """
+        学校PCなど新しい環境では、`app_data/vector_stores.json` が存在しないため、
+        ローカル台帳には過去のVector Storeが表示されません。
+
+        同じOpenAIアカウント・同じプロジェクトのAPIキーを使っている場合は、
+        OpenAI上に存在するVector Store一覧を取得し、ローカル台帳へ復元できます。
+        """
+    )
+
+    restore_limit = st.selectbox(
+        "取得するVector Store件数",
+        options=[10, 20, 50],
+        index=1,
+        help="OpenAI上のVector Storeを新しい順に取得します。",
+    )
+
+    if st.button("OpenAI上のVector Store一覧を取得"):
+        with st.spinner("OpenAI上のVector Store一覧を取得しています..."):
+            try:
+                remote_vector_stores = list_vector_stores(
+                    client=client,
+                    limit=restore_limit,
+                )
+
+                st.session_state["openai_vector_stores"] = remote_vector_stores
+
+                if remote_vector_stores:
+                    st.success(f"{len(remote_vector_stores)} 件のVector Storeを取得しました。")
+                else:
+                    st.info("OpenAI上のVector Storeは取得できませんでした。")
+
+            except Exception as e:
+                st.error("Vector Store一覧の取得中にエラーが発生しました。")
+                st.exception(e)
+
+    remote_vector_stores = st.session_state.get("openai_vector_stores", [])
+
+    if remote_vector_stores:
+        st.write(f"取得済み: {len(remote_vector_stores)} 件")
+
+        for i, store in enumerate(remote_vector_stores, start=1):
+            name = store.get("name", "unknown")
+            vector_store_id = store.get("vector_store_id", "unknown")
+            created_at = store.get("created_at", "unknown")
+            usage_bytes = store.get("usage_bytes", "unknown")
+            file_counts = store.get("file_counts", {})
+
+            display_vector_store_id = display_sensitive_id(vector_store_id)
+
+            with st.expander(f"{name} / {display_vector_store_id}"):
+                st.write("OpenAI上の名前")
+                st.code(name)
+
+                st.write("Vector Store ID")
+                st.code(display_vector_store_id)
+
+                st.write("created_at")
+                st.code(created_at)
+
+                st.write("usage_bytes")
+                st.code(str(usage_bytes))
+
+                st.write("file_counts")
+                st.json(file_counts)
+
+                restore_memo = st.text_area(
+                    "復元時の用途メモ",
+                    value="OpenAI上の一覧から復元したVector Store",
+                    height=80,
+                    key=f"restore_memo_{i}_{vector_store_id}",
+                )
+
+                col_restore, col_restore_use = st.columns(2)
+
+                with col_restore:
+                    if st.button(
+                        "ローカル台帳に復元",
+                        key=f"restore_registry_{i}_{vector_store_id}",
+                    ):
+                        upsert_vector_store_registry(
+                            vector_store_id=vector_store_id,
+                            name=name if name else "restored_vector_store",
+                            memo=restore_memo.strip(),
+                            source="openai_list",
+                        )
+                        st.success("ローカル台帳に復元しました。")
+                        st.rerun()
+
+                with col_restore_use:
+                    if st.button(
+                        "復元してすぐ使用",
+                        key=f"restore_and_use_{i}_{vector_store_id}",
+                    ):
+                        upsert_vector_store_registry(
+                            vector_store_id=vector_store_id,
+                            name=name if name else "restored_vector_store",
+                            memo=restore_memo.strip(),
+                            source="openai_list",
+                        )
+                        st.session_state["active_vector_store_id"] = vector_store_id
+                        st.session_state["registered_files"] = []
+                        mark_vector_store_used(vector_store_id)
+                        st.success("復元し、使用対象に切り替えました。")
+                        st.rerun()
+
+    st.markdown("---")
+
+    st.subheader("既存Vector Store IDを手入力で登録")
 
     manual_name = st.text_input(
         "表示名",
@@ -1134,6 +1251,7 @@ def render_vector_store_registry_panel() -> None:
                         delete_vector_store_from_registry(vector_store_id)
                         st.success("ローカル台帳から削除しました。")
                         st.rerun()
+
 
 
 def render_sidebar(
@@ -1573,7 +1691,7 @@ def main():
         render_history_page()
 
     with tab_vector_stores:
-        render_vector_store_registry_panel()
+        render_vector_store_registry_panel(client=client)
 
     with tab_demo_guide:
         render_demo_guide_page()

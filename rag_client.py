@@ -37,6 +37,15 @@ def is_valid_vector_store_id(vector_store_id: str) -> bool:
     return vector_store_id.strip().startswith("vs_")
 
 
+def remove_file_citations(text: str) -> str:
+    """
+    OpenAI File Search由来の引用マーカーを画面表示用に削除する。
+    例: fileciteturn0file0
+    """
+    text = re.sub(r"filecite[^]+", "", text)
+    return text.strip()
+
+
 def get_answer_style_instruction(answer_style: str) -> str:
     """
     画面で選ばれた回答スタイルに応じて、モデルへの追加指示を返す。
@@ -82,13 +91,14 @@ def extract_file_search_results(response: Any) -> list[dict[str, str]]:
         for result in results:
             filename = str(getattr(result, "filename", "unknown"))
             score = str(getattr(result, "score", "unknown"))
-
             content = getattr(result, "content", None)
+
             text_parts = []
 
             if content:
                 for c in content:
                     text = getattr(c, "text", "")
+
                     if text:
                         text_parts.append(text)
 
@@ -118,6 +128,61 @@ def create_vector_store(
         "name": str(getattr(vector_store, "name", name)),
         "vector_store_id": str(vector_store.id),
     }
+
+
+def format_timestamp(value: Any) -> str:
+    """
+    OpenAI APIから返るcreated_atを表示しやすい文字列にする。
+    int/floatのUNIX時刻ならISO形式に変換し、それ以外は文字列化する。
+    """
+    if value is None:
+        return "unknown"
+
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value).isoformat(timespec="seconds")
+        except Exception:
+            return str(value)
+
+    return str(value)
+
+
+def list_vector_stores(
+    client: OpenAI,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """
+    OpenAI上に存在するVector Store一覧を取得する。
+    学校PCなど、ローカル台帳が空の環境で復元するために使う。
+    """
+    vector_stores = client.vector_stores.list(limit=limit)
+
+    stores: list[dict[str, Any]] = []
+
+    for store in vector_stores.data:
+        vector_store_id = str(getattr(store, "id", "unknown"))
+        name = str(getattr(store, "name", "") or "unnamed_vector_store")
+        created_at = format_timestamp(getattr(store, "created_at", None))
+        usage_bytes = getattr(store, "usage_bytes", "unknown")
+        file_counts_obj = getattr(store, "file_counts", None)
+
+        file_counts: dict[str, Any] = {}
+
+        if file_counts_obj is not None:
+            for key in ["in_progress", "completed", "failed", "cancelled", "total"]:
+                file_counts[key] = getattr(file_counts_obj, key, "unknown")
+
+        stores.append(
+            {
+                "name": name,
+                "vector_store_id": vector_store_id,
+                "created_at": created_at,
+                "usage_bytes": str(usage_bytes),
+                "file_counts": file_counts,
+            }
+        )
+
+    return stores
 
 
 def upload_path_to_vector_store(
@@ -319,7 +384,7 @@ def ask_rag(
         include=["file_search_call.results"],
     )
 
-    answer = response.output_text
+    answer = remove_file_citations(response.output_text)
     search_results = extract_file_search_results(response)
 
     if not search_results:
