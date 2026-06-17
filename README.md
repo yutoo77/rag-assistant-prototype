@@ -145,11 +145,14 @@ rag-assistant-prototype/
 ├── dev_log.md
 ├── .env.example
 ├── .gitignore
+├── scripts/
+│   ├── ask_rag.py
+│   └── setup_vector_store.py
 └── data/
     └── raw/
         └── .gitkeep
 ```
-
+`scripts/` には、初期検証時に使用した補助スクリプトを配置しています。アプリ本体は主に `app.py`、`rag_client.py`、`storage.py` で構成されています。
 以下のファイル・ディレクトリはローカル環境専用のため、リポジトリには含めていません。
 
 ```text
