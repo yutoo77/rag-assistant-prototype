@@ -757,7 +757,7 @@ def render_demo_guide_page() -> None:
         """
     )
 
-    st.subheader("5. 共有時での説明の流れ")
+    st.subheader("5. 共有時の説明の流れ")
 
     st.markdown(
         """

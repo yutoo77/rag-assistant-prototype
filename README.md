@@ -142,7 +142,6 @@ rag-assistant-prototype/
 ├── storage.py
 ├── requirements.txt
 ├── README.md
-├── dev_log.md
 ├── .env.example
 ├── .gitignore
 ├── scripts/
