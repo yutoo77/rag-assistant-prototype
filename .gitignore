@@ -1,4 +1,4 @@
-.venv/
+﻿.venv/
 .env
 __pycache__/
 *.pyc
@@ -12,7 +12,7 @@ demo_docs_private/
 data/raw/*
 !data/raw/.gitkeep
 
-# 発表・スクショ用のローカル作業メモ
+# 共有・スクリーンショット用のローカル作業メモ
 presentation_assets.md
 presentation_assets/
 screenshots/

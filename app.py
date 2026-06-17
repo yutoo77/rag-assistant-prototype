@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 from typing import Any
 
@@ -90,7 +90,7 @@ def ensure_active_vector_store(env_vector_store_id: str) -> None:
 
 def is_presentation_mode() -> bool:
     """
-    発表・スクショ用の表示モードかどうかを返す。
+    共有・スクリーンショット用の表示モードかどうかを返す。
     Trueの場合、Vector Store IDなどをマスク表示する。
     """
     return bool(st.session_state.get("presentation_mode", False))
@@ -98,7 +98,7 @@ def is_presentation_mode() -> bool:
 
 def display_sensitive_id(value: str) -> str:
     """
-    発表モードがONの場合、IDを完全マスクして表示する。
+    公開用表示モードがONの場合、IDを完全マスクして表示する。
     実際の処理では元のIDを使い、画面表示だけを隠す。
     """
     if not is_presentation_mode():
@@ -223,7 +223,7 @@ def render_reliability_note(
 ) -> None:
     """
     回答の信頼性に関する簡易メモを表示する。
-    これは厳密な回答可能性判定ではなく、発表・検証用の補助表示。
+    これは厳密な回答可能性判定ではなく、確認・検証用の補助表示。
     """
     st.subheader("回答信頼性メモ")
 
@@ -433,7 +433,7 @@ def render_count_table(title: str, counts: dict[str, int]) -> None:
 def render_saved_log_analysis() -> None:
     """
     ローカル保存済み質問ログの簡易分析を表示する。
-    発表で説明しやすいように、件数・比率・根拠候補数などを整理する。
+    共有時に説明しやすいように、件数・比率・根拠候補数などを整理する。
     """
     st.header("質問ログ分析")
 
@@ -614,7 +614,7 @@ def render_saved_log_analysis() -> None:
             """
         )
 
-    with st.expander("発表での説明例"):
+    with st.expander("共有時の説明例"):
         st.markdown(
             """
             質問ログを保存・分析することで、利用者がどのような質問をしているかを把握できます。
@@ -651,14 +651,14 @@ def render_history_page() -> None:
 
 def render_demo_guide_page() -> None:
     """
-    ゼミ発表やデモ確認用の手順を表示する。
-    アプリの操作手順と、発表時に説明するポイントをまとめる。
+    動作確認や共有用の手順を表示する。
+    アプリの操作手順と、共有時に説明するポイントをまとめる。
     """
-    st.header("デモ手順")
+    st.header("使い方ガイド")
 
     st.markdown(
         """
-        このタブでは、ゼミ発表や動作確認で使うデモの流れを確認できます。
+        このタブでは、動作確認や共有時に使う基本の流れを確認できます。
 
         本プロトタイプは、閉じた資料セットに基づいて質問応答を行う
         RAG型情報支援アプリの初期試作です。
@@ -670,17 +670,17 @@ def render_demo_guide_page() -> None:
     st.markdown(
         """
         - サイドバーで、使用中のVector Storeを確認する
-        - 発表用・検証用の資料セットを使用していることを確認する
+        - 共有用・検証用の資料セットを使用していることを確認する
         - 登録済み資料一覧を更新し、想定した資料が入っているか確認する
         - 回答設定で、検索件数と回答スタイルを確認する
         """
     )
 
     st.info(
-        "発表時は、開発用の資料セットではなく、デモ用に整理したVector Storeを使うと安全です。"
+        "共有時は、開発用の資料セットではなく、デモ用に整理したVector Storeを使うと安全です。"
     )
 
-    st.subheader("2. 資料内質問のデモ")
+    st.subheader("2. 資料内質問の確認")
 
     st.markdown(
         """
@@ -707,12 +707,12 @@ def render_demo_guide_page() -> None:
         """
     )
 
-    st.subheader("3. 資料外質問のデモ")
+    st.subheader("3. 資料外質問の確認")
 
     st.markdown(
         """
         次に、登録資料に直接書かれていない質問を行います。
-        このデモでは、資料外の内容に対して推測回答を抑制できるかを確認します。
+        この確認では、資料外の内容に対して推測回答を抑制できるかを確認します。
         """
     )
 
@@ -749,7 +749,7 @@ def render_demo_guide_page() -> None:
 
     st.markdown(
         """
-        発表で説明できるポイント:
+        共有時に説明できるポイント:
 
         - 質問ログを蓄積することで、利用者の関心やつまずきやすい内容を分析できる
         - 展示改善やFAQ作成に活用できる可能性がある
@@ -761,7 +761,7 @@ def render_demo_guide_page() -> None:
 
     st.markdown(
         """
-        発表時には、以下の順番で説明すると流れが自然です。
+        共有時には、以下の順番で説明すると流れが自然です。
 
         1. 科学館・展示施設には多様な資料が蓄積されている
         2. しかし、必要な情報を探したり、来館者の疑問に即時対応したりすることは簡単ではない
@@ -923,7 +923,7 @@ def render_app_overview(
             - 質問・回答ログのローカル保存
             - 保存済みログのJSONダウンロード
             - 質問ログの簡易分析
-            - デモ手順タブ
+            - 使い方ガイドタブ
             """
         )
 
@@ -1267,15 +1267,15 @@ def render_sidebar(
         st.header("設定")
 
         presentation_mode = st.checkbox(
-            "発表モード（IDをマスク）",
+            "公開用表示モード（IDをマスク）",
             value=st.session_state.get("presentation_mode", False),
-            help="スクリーンショットや発表時に、Vector Store IDを一部マスクして表示します。",
+            help="スクリーンショットや共有時に、Vector Store IDを一部マスクして表示します。",
         )
 
         st.session_state["presentation_mode"] = presentation_mode
 
         if presentation_mode:
-            st.caption("発表モード中です。画面上のIDはマスク表示されます。")
+            st.caption("公開用表示モード中です。画面上のIDはマスク表示されます。")
 
         st.write("使用モデル")
         st.code(model)
@@ -1308,7 +1308,7 @@ def render_sidebar(
 
         new_vector_store_memo = st.text_area(
             "用途メモ",
-            value="発表デモ用の資料セット",
+            value="検証用の資料セット",
             height=80,
         )
 
@@ -1362,7 +1362,7 @@ def render_sidebar(
 
         answer_style = st.selectbox(
             "回答スタイル",
-            options=["簡潔", "詳細", "箇条書き", "発表用"],
+            options=["簡潔", "詳細", "箇条書き", "説明用"],
             index=0,
             help="同じ検索結果でも、回答の書き方を切り替えられます。",
         )
@@ -1579,7 +1579,7 @@ def main():
     )
 
     tab_question, tab_history, tab_vector_stores, tab_demo_guide, tab_overview = st.tabs(
-        ["質問", "履歴", "Vector Store管理", "デモ手順", "アプリ概要"]
+        ["質問", "履歴", "Vector Store管理", "使い方ガイド", "アプリ概要"]
     )
 
     with tab_question:
@@ -1603,7 +1603,7 @@ def main():
 
         if is_presentation_mode():
             st.info(
-                "発表モード中です。画面上のVector Store IDやFile IDはマスク表示されています。"
+                "公開用表示モード中です。画面上のVector Store IDやFile IDはマスク表示されています。"
             )
 
         demo_questions = {
@@ -1619,7 +1619,7 @@ def main():
         }
 
         selected_label = st.selectbox(
-            "デモ質問を選ぶ",
+            "質問例を選ぶ",
             ["自由入力"] + list(demo_questions.keys()),
         )
 
@@ -1635,7 +1635,7 @@ def main():
                 "「資料内では確認できません」と返るのが期待される挙動です。"
             )
         else:
-            st.caption("資料内に根拠がある想定のデモ質問です。")
+            st.caption("資料内に根拠がある想定の質問例です。")
 
         with st.form("question_form"):
             question = st.text_area(

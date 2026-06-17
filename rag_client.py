@@ -1,4 +1,4 @@
-import re
+﻿import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -63,8 +63,8 @@ def get_answer_style_instruction(answer_style: str) -> str:
             "回答は箇条書きを中心にしてください。"
             "重要な点を整理し、読みやすく示してください。"
         ),
-        "発表用": (
-            "回答はゼミ発表で説明しやすい形にしてください。"
+        "説明用": (
+            "回答は共有時に説明しやすい形にしてください。"
             "背景、要点、意義が伝わるように、少し丁寧な表現でまとめてください。"
         ),
     }
